@@ -5,7 +5,7 @@ import sqlite3
 from flask import Flask, render_template_string, request, jsonify, send_from_directory
 
 app = Flask(__name__)
-app.secret_key = "duka_pos_enterprise_key"
+app.secret_key = "kiosk_pos_enterprise_key"
 
 BASE_DIR = os.environ.get(
     "RENDER_DISK_PATH",
@@ -90,7 +90,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Duka Track POS</title>
+    <title>Kiosk Track POS</title>
 
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="/static/app_icon.svg" type="image/svg+xml">
@@ -99,7 +99,7 @@ HTML_TEMPLATE = """
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="DukaPOS">
+    <meta name="apple-mobile-web-app-title" content="KioskTrack">
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -126,7 +126,7 @@ HTML_TEMPLATE = """
             <div class="flex items-center gap-2.5">
                 <img src="/static/app_icon.svg" alt="Logo" class="w-9 h-9 rounded-xl shadow-md">
                 <div>
-                    <h1 class="text-base font-extrabold tracking-tight text-slate-900 dark:text-white leading-none">Duka Track</h1>
+                    <h1 class="text-base font-extrabold tracking-tight text-slate-900 dark:text-white leading-none">Kiosk Track</h1>
                     <span id="connStatus" class="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 tracking-wide flex items-center gap-1 mt-0.5">
                         <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Online
                     </span>
@@ -553,11 +553,11 @@ HTML_TEMPLATE = """
 
         window.addEventListener('appinstalled', () => {
             if (installBtn) installBtn.classList.add('hidden');
-            showToast("DukaPOS installed successfully! Check home screen.");
+            showToast("Kiosk Track installed successfully! Check home screen.");
         });
 
         // Offline IndexedDB Engine
-        let dbPromise = indexedDB.open('DukaOfflineQueue', 1);
+        let dbPromise = indexedDB.open('KioskOfflineQueue', 1);
         dbPromise.onupgradeneeded = (e) => {
             let db = e.target.result;
             if (!db.objectStoreNames.contains('pending_sales')) {
@@ -566,7 +566,7 @@ HTML_TEMPLATE = """
         };
 
         function queueOfflineSale(payload) {
-            let request = indexedDB.open('DukaOfflineQueue', 1);
+            let request = indexedDB.open('KioskOfflineQueue', 1);
             request.onsuccess = (e) => {
                 let db = e.target.result;
                 let tx = db.transaction('pending_sales', 'readwrite');
@@ -575,7 +575,7 @@ HTML_TEMPLATE = """
         }
 
         async function syncOfflineSales() {
-            let request = indexedDB.open('DukaOfflineQueue', 1);
+            let request = indexedDB.open('KioskOfflineQueue', 1);
             request.onsuccess = (e) => {
                 let db = e.target.result;
                 let tx = db.transaction('pending_sales', 'readwrite');
@@ -610,7 +610,7 @@ HTML_TEMPLATE = """
 
         // Theme Management
         function applySavedTheme() {
-            const isDark = localStorage.getItem('duka_theme') !== 'light';
+            const isDark = localStorage.getItem('kiosk_theme') !== 'light';
             if (isDark) {
                 document.documentElement.classList.add('dark');
                 document.getElementById('themeIcon').innerText = '🌙';
@@ -623,7 +623,7 @@ HTML_TEMPLATE = """
 
         function toggleTheme() {
             const isDark = document.documentElement.classList.toggle('dark');
-            localStorage.setItem('duka_theme', isDark ? 'dark' : 'light');
+            localStorage.setItem('kiosk_theme', isDark ? 'dark' : 'light');
             document.getElementById('themeIcon').innerText = isDark ? '🌙' : '☀️';
             if (chartPaymentInstance) renderChartsWithTheme();
         }
