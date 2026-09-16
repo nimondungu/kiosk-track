@@ -2,38 +2,75 @@ import csv
 import io
 import os
 import sqlite3
-from flask import Flask, render_template_string, request, jsonify, send_from_directory
+from datetime import datetime, date
+from functools import wraps
+from flask import (
+    Flask, render_template_string, request, jsonify, 
+    send_from_directory, session, redirect, url_for
+)
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = "kiosk_pos_enterprise_key"
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "kiosk_pos_enterprise_multitenant_key_2026")
 
 BASE_DIR = os.environ.get(
     "RENDER_DISK_PATH",
     os.path.abspath(os.path.dirname(__file__))
 )
-DB_FILE = os.path.join(BASE_DIR, "shop.db")
+DB_FILE = "/home/kiosktrack/kiosk-track/shop.db" if os.path.exists("/home/kiosktrack/kiosk-track") else os.path.join(BASE_DIR, "shop.db")
 
 
 def init_db():
-    os.makedirs(BASE_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(DB_FILE)), exist_ok=True)
     conn = sqlite3.connect(DB_FILE, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     cursor = conn.cursor()
 
+    # 1. Shops Table
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS items (
-            item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            unit_price REAL NOT NULL DEFAULT 0.0,
-            reorder_level INTEGER NOT NULL DEFAULT 5,
-            is_active INTEGER NOT NULL DEFAULT 1
+        CREATE TABLE IF NOT EXISTS shops (
+            shop_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     """)
 
+    # 2. Users Table (with phone and recovery_pin for self-serve reset)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shop_id INTEGER NOT NULL,
+            username TEXT UNIQUE NOT NULL,
+            phone TEXT,
+            recovery_pin TEXT,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'cashier')),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (shop_id) REFERENCES shops(shop_id) ON DELETE CASCADE
+        );
+    """)
+
+    # 3. Items Table (with direct current_stock column)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS items (
+            item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shop_id INTEGER DEFAULT 1,
+            name TEXT NOT NULL,
+            unit_price REAL NOT NULL DEFAULT 0.0,
+            current_stock INTEGER NOT NULL DEFAULT 0,
+            reorder_level INTEGER NOT NULL DEFAULT 5,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    # 4. Transactions Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shop_id INTEGER DEFAULT 1,
+            user_id INTEGER DEFAULT 1,
             item_id INTEGER NOT NULL,
             movement_type TEXT NOT NULL CHECK(movement_type IN ('IN', 'OUT', 'ADJUSTMENT')),
             payment_method TEXT CHECK(payment_method IN ('CASH', 'MPESA', 'N/A')),
@@ -45,27 +82,68 @@ def init_db():
         );
     """)
 
+    # --- Live Migration Check for Existing Database ---
+    cursor.execute("PRAGMA table_info(users);")
+    user_cols = [row["name"] for row in cursor.fetchall()]
+    if "phone" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN phone TEXT;")
+    if "recovery_pin" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN recovery_pin TEXT;")
+
+    cursor.execute("PRAGMA table_info(items);")
+    item_cols = [row["name"] for row in cursor.fetchall()]
+    if "shop_id" not in item_cols:
+        cursor.execute("ALTER TABLE items ADD COLUMN shop_id INTEGER DEFAULT 1;")
+    if "current_stock" not in item_cols:
+        cursor.execute("ALTER TABLE items ADD COLUMN current_stock INTEGER NOT NULL DEFAULT 0;")
+        # Backfill initial stock from past transaction sums if upgrading
+        cursor.execute("""
+            UPDATE items 
+            SET current_stock = COALESCE((
+                SELECT SUM(
+                    CASE 
+                        WHEN movement_type = 'IN' THEN quantity
+                        WHEN movement_type = 'OUT' THEN -quantity
+                        WHEN movement_type = 'ADJUSTMENT' THEN quantity
+                        ELSE 0 
+                    END
+                ) FROM transactions WHERE transactions.item_id = items.item_id
+            ), 0);
+        """)
+    if "created_at" not in item_cols:
+        cursor.execute("ALTER TABLE items ADD COLUMN created_at DATETIME;")
+        cursor.execute("UPDATE items SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL;")
+
+    cursor.execute("PRAGMA table_info(transactions);")
+    tx_cols = [row["name"] for row in cursor.fetchall()]
+    if "shop_id" not in tx_cols:
+        cursor.execute("ALTER TABLE transactions ADD COLUMN shop_id INTEGER DEFAULT 1;")
+    if "user_id" not in tx_cols:
+        cursor.execute("ALTER TABLE transactions ADD COLUMN user_id INTEGER DEFAULT 1;")
+
+    # Seed initial shop and master admin if empty
+    cursor.execute("SELECT COUNT(*) FROM shops;")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO shops (shop_id, name) VALUES (1, 'Kiosk Track Main');")
+        cursor.execute("""
+            INSERT INTO users (shop_id, username, phone, recovery_pin, password_hash, role)
+            VALUES (1, 'admin', '0700000000', '1234', ?, 'admin');
+        """, (generate_password_hash("admin123"),))
+
+    # Compatibility view
     cursor.execute("DROP VIEW IF EXISTS view_current_stock;")
     cursor.execute("""
         CREATE VIEW view_current_stock AS
         SELECT 
-            i.item_id,
-            i.name,
-            i.unit_price,
-            i.reorder_level,
-            i.is_active,
-            COALESCE(SUM(
-                CASE 
-                    WHEN t.movement_type = 'IN' THEN t.quantity
-                    WHEN t.movement_type = 'OUT' THEN -t.quantity
-                    WHEN t.movement_type = 'ADJUSTMENT' THEN t.quantity
-                    ELSE 0 
-                END
-            ), 0) AS current_stock
-        FROM items i
-        LEFT JOIN transactions t ON i.item_id = t.item_id
-        WHERE i.is_active = 1
-        GROUP BY i.item_id;
+            item_id,
+            shop_id,
+            name,
+            unit_price,
+            current_stock,
+            reorder_level,
+            is_active
+        FROM items
+        WHERE is_active = 1;
     """)
 
     conn.commit()
@@ -73,7 +151,6 @@ def init_db():
 
 
 def get_db():
-    init_db()
     conn = sqlite3.connect(DB_FILE, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -84,6 +161,26 @@ with app.app_context():
     init_db()
 
 
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "user_id" not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+        if session.get("role") != "admin":
+            return jsonify({"error": "Admin access required"}), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en" class="dark">
@@ -91,7 +188,6 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Kiosk Track POS</title>
-
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="/static/app_icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="/static/app_icon.svg">
@@ -100,23 +196,16 @@ HTML_TEMPLATE = """
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="KioskTrack">
-
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['"Plus Jakarta Sans"', 'sans-serif'] }
-                }
-            }
+            theme: { extend: { fontFamily: { sans: ['"Plus Jakarta Sans"', 'sans-serif'] } } }
         }
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen font-sans antialiased transition-colors duration-200">
 
@@ -126,10 +215,13 @@ HTML_TEMPLATE = """
             <div class="flex items-center gap-2.5">
                 <img src="/static/app_icon.svg" alt="Logo" class="w-9 h-9 rounded-xl shadow-md">
                 <div>
-                    <h1 class="text-base font-extrabold tracking-tight text-slate-900 dark:text-white leading-none">Kiosk Track</h1>
-                    <span id="connStatus" class="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 tracking-wide flex items-center gap-1 mt-0.5">
-                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Online
-                    </span>
+                    <h1 class="text-base font-extrabold tracking-tight text-slate-900 dark:text-white leading-none">{{ session.get('shop_name', 'Kiosk Track') }}</h1>
+                    <div class="flex items-center gap-2 mt-0.5">
+                        <span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> @{{ session.get('username') }} ({{ session.get('role')|capitalize }})
+                        </span>
+                        <a href="/logout" class="text-[10px] font-bold text-rose-500 hover:underline">Log out</a>
+                    </div>
                 </div>
             </div>
 
@@ -141,12 +233,14 @@ HTML_TEMPLATE = """
                 <button onclick="toggleTheme()" class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:scale-105 active:scale-95 transition">
                     <span id="themeIcon">🌙</span>
                 </button>
-                <button onclick="openImportModal()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold px-2.5 py-2 rounded-xl transition">
-                    📂 Import
+                {% if session.get('role') == 'admin' %}
+                <button onclick="openStaffModal()" title="Manage Staff" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold px-2.5 py-2 rounded-xl transition flex items-center gap-1">
+                    <span>👥</span> Staff
                 </button>
                 <button onclick="openAddItemModal()" class="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold px-3 py-2 rounded-xl shadow transition flex items-center gap-1">
                     <span>+</span> Item
                 </button>
+                {% endif %}
             </div>
         </div>
     </nav>
@@ -158,17 +252,31 @@ HTML_TEMPLATE = """
 
         <!-- SCREEN 1: POS COUNTER -->
         <section id="screen-counter" class="tab-screen">
+            
+            <!-- Date Context Selector -->
+            <div class="bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">📅 Entry Date:</span>
+                    <input type="date" id="activeSaleDate" value="{{ today_date }}" onchange="onSaleDateChange()" 
+                           class="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-2.5 py-1 text-xs font-bold text-slate-900 dark:text-white">
+                </div>
+                <div id="dateNotice" class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                    <span>🟢</span> Live Mode (Deducts Stock)
+                </div>
+            </div>
+
+            <!-- Stats Bar -->
             <div class="grid grid-cols-3 gap-2.5 mb-4">
                 <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Cash</span>
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">💵 Cash</span>
                     <div class="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400" id="statCash">KES {{ "{:,.0f}".format(today_cash) }}</div>
                 </div>
                 <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">M-Pesa</span>
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">📲 M-Pesa</span>
                     <div class="text-base sm:text-lg font-black text-green-600 dark:text-green-400" id="statMpesa">KES {{ "{:,.0f}".format(today_mpesa) }}</div>
                 </div>
                 <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Total Sales</span>
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">📊 Total Sales</span>
                     <div class="text-base sm:text-lg font-black text-slate-900 dark:text-white" id="statTotal">KES {{ "{:,.0f}".format(today_cash + today_mpesa) }}</div>
                 </div>
             </div>
@@ -179,7 +287,7 @@ HTML_TEMPLATE = """
                     <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                     </div>
-                    <input type="text" id="counterSearch" oninput="filterList('counterSearch', '.counter-card')" placeholder="Search items, medicines, spirits..." 
+                    <input type="text" id="counterSearch" oninput="filterList('counterSearch', '.counter-card')" placeholder="Search items..." 
                            class="w-full pl-11 pr-10 py-3 bg-white dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-700/80 text-slate-900 dark:text-white rounded-2xl placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium">
                 </div>
             </div>
@@ -198,7 +306,6 @@ HTML_TEMPLATE = """
                             <span id="badge-{{ item['item_id'] }}" class="px-2.5 py-1 rounded-full text-xs font-bold {% if item['current_stock'] <= 0 %}bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-800{% elif item['current_stock'] <= item['reorder_level'] %}bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800{% else %}bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700{% endif %}">
                                 Stock: <span id="stock-val-{{ item['item_id'] }}">{{ item['current_stock'] }}</span>
                             </span>
-                            <button onclick="archiveItem({{ item['item_id'] }}, '{{ item['name'] }}')" title="Archive product" class="text-slate-400 hover:text-rose-500 p-1 text-sm font-bold">&times;</button>
                         </div>
                     </div>
 
@@ -212,180 +319,127 @@ HTML_TEMPLATE = """
                             </div>
 
                             <button onclick="makeSale({{ item['item_id'] }}, 'CASH')" 
-                                    class="bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition">
-                                💵 Cash
+                                    class="bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
+                                <span>💵</span> Cash
                             </button>
                             <button onclick="makeSale({{ item['item_id'] }}, 'MPESA')" 
-                                    class="bg-green-600 hover:bg-green-500 text-white active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition">
-                                📲 M-Pesa
+                                    class="bg-green-600 hover:bg-green-500 text-white active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
+                                <span>📲</span> M-Pesa
                             </button>
                             <button onclick="openSplitModal({{ item['item_id'] }}, '{{ item['name'] }}', {{ item['unit_price'] }})" 
-                                    class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800/60 text-amber-800 dark:text-amber-300 active:scale-95 px-2 py-1.5 rounded-xl text-xs font-bold transition">
-                                ⚡ Split
+                                    class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800/60 text-amber-800 dark:text-amber-300 active:scale-95 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
+                                <span>⚡</span> Split
                             </button>
                         </div>
 
+                        {% if session.get('role') == 'admin' %}
                         <div class="flex items-center gap-1.5">
                             <button onclick="reverseSale({{ item['item_id'] }})" 
                                     title="Undo accidental sale"
-                                    class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 active:scale-95 px-2 py-1.5 rounded-xl text-xs font-bold transition">
-                                ↩ Return
+                                    class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 active:scale-95 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
+                                <span>↩</span> Return
                             </button>
-
                             <input type="number" id="restock-qty-{{ item['item_id'] }}" placeholder="+Qty" min="1" 
                                    class="w-12 px-2 py-1.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-center text-xs text-slate-900 dark:text-white focus:outline-none">
                             <button onclick="makeRestock({{ item['item_id'] }})" 
-                                    class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-sky-700 dark:text-sky-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 transition">
-                                + In
+                                    class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-sky-700 dark:text-sky-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 transition flex items-center gap-1">
+                                <span>📦</span> + In
                             </button>
                         </div>
+                        {% endif %}
                     </div>
                 </div>
                 {% endfor %}
             </div>
         </section>
 
-        <!-- SCREEN 2: REPORTS & ANALYTICS -->
+        {% if session.get('role') == 'admin' %}
+        <!-- SCREEN 2: REPORTS & ANALYTICS (Admin Only) -->
         <section id="screen-reports" class="tab-screen hidden">
             <div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
-                
                 <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                     <div>
-                        <h2 class="text-base font-bold text-slate-900 dark:text-white">Sales & Visual Analytics</h2>
-                        <p class="text-xs text-slate-500">Live charts and performance metrics</p>
+                        <h2 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                            <span>📊</span> Sales & Staff Shifts
+                        </h2>
+                        <p class="text-xs text-slate-500">Historical performance and staff handovers</p>
                     </div>
                     <div class="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
                         <button onclick="setReportRange('today', this)" class="report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white">Today</button>
-                        <button onclick="setReportRange('week', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white">7 Days</button>
-                        <button onclick="setReportRange('month', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white">30 Days</button>
+                        <button onclick="setReportRange('yesterday', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">Yesterday</button>
+                        <button onclick="setReportRange('week', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">7 Days</button>
+                        <button onclick="setReportRange('month', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">30 Days</button>
                     </div>
                 </div>
 
-                <!-- Custom Range Row -->
-                <div class="flex flex-wrap items-center gap-2 mb-4 text-xs bg-slate-50 dark:bg-slate-950/60 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
-                    <span class="text-slate-500 font-bold uppercase text-[10px]">Custom:</span>
-                    <input type="date" id="reportStart" class="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1 text-xs">
-                    <span class="text-slate-400">to</span>
-                    <input type="date" id="reportEnd" class="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1 text-xs">
-                    <button onclick="fetchCustomReports()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-1 rounded-lg transition">Apply</button>
-                </div>
-
-                <!-- Metric Cards -->
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
                     <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
-                        <span class="text-[10px] text-slate-500 uppercase font-bold">Revenue</span>
+                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💰</span> Revenue</span>
                         <div id="repTotalRev" class="text-base font-black text-slate-900 dark:text-white">KES 0</div>
                     </div>
                     <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
-                        <span class="text-[10px] text-slate-500 uppercase font-bold">Units Sold</span>
+                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📦</span> Units Sold</span>
                         <div id="repTotalUnits" class="text-base font-black text-emerald-600 dark:text-emerald-400">0 pcs</div>
                     </div>
                     <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
-                        <span class="text-[10px] text-slate-500 uppercase font-bold">Cash</span>
+                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💵</span> Cash</span>
                         <div id="repCash" class="text-base font-black text-emerald-500">KES 0</div>
                     </div>
                     <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
-                        <span class="text-[10px] text-slate-500 uppercase font-bold">M-Pesa</span>
+                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📲</span> M-Pesa</span>
                         <div id="repMpesa" class="text-base font-black text-green-500">KES 0</div>
                     </div>
                 </div>
 
-                <!-- Interactive Charts -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center">
-                        <h3 class="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase mb-2">Payment Distribution</h3>
-                        <div class="w-full h-44 flex items-center justify-center">
-                            <canvas id="chartPayment"></canvas>
-                        </div>
+                <!-- Staff Performance Breakdown Table -->
+                <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 mb-4">
+                    <h3 class="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                        <span>👥</span> Staff Shift Breakdown
+                    </h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs text-left">
+                            <thead class="text-[10px] uppercase text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                                <tr>
+                                    <th class="py-2">Staff</th>
+                                    <th class="py-2">Role</th>
+                                    <th class="py-2">Sales</th>
+                                    <th class="py-2">Cash</th>
+                                    <th class="py-2">M-Pesa</th>
+                                    <th class="py-2 font-bold">Total</th>
+                                </tr>
+                            </thead>
+                            <tbody id="staffTableBody" class="divide-y divide-slate-100 dark:divide-slate-800/70">
+                                <tr><td colspan="6" class="py-3 text-center text-slate-400">Loading staff shift details...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
-                    <div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-2xl border border-slate-200 dark:border-slate-800">
-                        <h3 class="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase mb-2">Top Selling Items</h3>
-                        <div class="w-full h-44">
-                            <canvas id="chartTopItems"></canvas>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Breakdown Lists -->
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-                    <div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
-                        <h3 class="text-xs font-bold text-emerald-600 dark:text-emerald-400 mb-2 uppercase flex items-center justify-between">
-                            <span>🔥 Top Sellers by Volume</span>
-                            <span class="text-[10px] text-slate-400">Units</span>
-                        </h3>
-                        <ul id="listTopQty" class="divide-y divide-slate-200 dark:divide-slate-800/60 text-xs text-slate-700 dark:text-slate-300"></ul>
-                    </div>
-
-                    <div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
-                        <h3 class="text-xs font-bold text-indigo-600 dark:text-indigo-400 mb-2 uppercase flex items-center justify-between">
-                            <span>💰 Top Earners by Sales</span>
-                            <span class="text-[10px] text-slate-400">KES</span>
-                        </h3>
-                        <ul id="listTopRev" class="divide-y divide-slate-200 dark:divide-slate-800/60 text-xs text-slate-700 dark:text-slate-300"></ul>
-                    </div>
-
-                    <div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
-                        <h3 class="text-xs font-bold text-rose-600 dark:text-rose-400 mb-2 uppercase flex items-center justify-between">
-                            <span>📉 Slowest Moving Items</span>
-                            <span class="text-[10px] text-slate-400">Units</span>
-                        </h3>
-                        <ul id="listLowestQty" class="divide-y divide-slate-200 dark:divide-slate-800/60 text-xs text-slate-700 dark:text-slate-300"></ul>
-                    </div>
-
-                    <div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
-                        <h3 class="text-xs font-bold text-amber-600 dark:text-amber-400 mb-2 uppercase flex items-center justify-between">
-                            <span>⚡ High Volume, Low Value</span>
-                            <span class="text-[10px] text-slate-400">Units vs KES</span>
-                        </h3>
-                        <ul id="listDivergence" class="divide-y divide-slate-200 dark:divide-slate-800/60 text-xs text-slate-700 dark:text-slate-300"></ul>
-                    </div>
-                </div>
-
-                <!-- Danger Zone: Reset Sales Memory -->
-                <div class="border-t border-slate-200 dark:border-slate-800 pt-4 flex items-center justify-between">
-                    <div>
-                        <span class="text-xs font-bold text-slate-800 dark:text-slate-200">Erase Test Memory</span>
-                        <p class="text-[11px] text-slate-500">Wipes all sales transactions, leaving catalog items intact</p>
-                    </div>
-                    <button onclick="confirmWipeAllSalesHistory()" class="bg-rose-100 dark:bg-rose-950/80 hover:bg-rose-200 dark:hover:bg-rose-900 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold px-3 py-1.5 rounded-xl transition">
-                        🗑️ Clear Sales History
-                    </button>
                 </div>
 
             </div>
         </section>
 
-        <!-- SCREEN 3: PHYSICAL STOCK TAKE & AUDIT -->
+        <!-- SCREEN 3: PHYSICAL STOCK TAKE (Admin Only) -->
         <section id="screen-audit" class="tab-screen hidden">
             <div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
-                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-                    <div>
-                        <h2 class="text-base font-bold text-slate-900 dark:text-white">Physical Stock Take</h2>
-                        <p class="text-xs text-slate-500">Calibrate shelf counts directly</p>
-                    </div>
-                    <button onclick="confirmResetAllZero()" class="bg-rose-100 dark:bg-rose-950/80 hover:bg-rose-200 dark:hover:bg-rose-900 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1">
-                        ⚠️ Reset All to 0
-                    </button>
+                <div class="mb-4">
+                    <h2 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <span>📋</span> Physical Stock Calibration
+                    </h2>
+                    <p class="text-xs text-slate-500">Setting counts here overrides your shelf total directly</p>
                 </div>
-
-                <div class="mb-3">
-                    <input type="text" id="auditSearch" oninput="filterList('auditSearch', '.audit-row')" placeholder="Search item to calibrate stock..." 
-                           class="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-500">
-                </div>
-
-                <div class="divide-y divide-slate-100 dark:divide-slate-800/80 max-h-[500px] overflow-y-auto pr-1" id="auditList">
+                <div class="divide-y divide-slate-100 dark:divide-slate-800/80 max-h-[500px] overflow-y-auto pr-1">
                     {% for item in items %}
-                    <div class="audit-row py-2.5 flex items-center justify-between gap-2" data-name="{{ item['name'] }}">
+                    <div class="audit-row py-2.5 flex items-center justify-between gap-2">
                         <div>
                             <div class="font-bold text-slate-900 dark:text-white text-xs leading-snug">{{ item['name'] }}</div>
-                            <span class="text-[11px] text-slate-500">System Count: <b id="audit-sys-{{ item['item_id'] }}">{{ item['current_stock'] }}</b></span>
+                            <span class="text-[11px] text-slate-500">Current Count: <b id="audit-sys-{{ item['item_id'] }}">{{ item['current_stock'] }}</b></span>
                         </div>
                         <div class="flex items-center gap-1.5">
                             <input type="number" id="counted-{{ item['item_id'] }}" placeholder="Counted" 
-                                   class="w-16 px-2 py-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-center text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-sky-500">
+                                   class="w-16 px-2 py-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-center text-xs font-bold text-slate-900 dark:text-white">
                             <button onclick="updateStockTake({{ item['item_id'] }})" 
-                                    class="bg-sky-600 hover:bg-sky-500 active:scale-95 text-white font-bold text-xs px-2.5 py-1 rounded-lg transition">
-                                Set
+                                    class="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs px-2.5 py-1 rounded-lg flex items-center gap-1">
+                                <span>✓</span> Set
                             </button>
                         </div>
                     </div>
@@ -393,66 +447,68 @@ HTML_TEMPLATE = """
                 </div>
             </div>
         </section>
+        {% endif %}
+
+        <!-- STAFF MANAGEMENT MODAL (Admin Only) -->
+        <div id="staffModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                    <h3 class="text-sm font-bold text-slate-900 dark:text-white">Manage Cashiers</h3>
+                    <button onclick="closeStaffModal()" class="text-slate-400 text-lg">&times;</button>
+                </div>
+                
+                <!-- Existing Staff List with Password Reset -->
+                <div class="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    <h4 class="text-[10px] font-bold uppercase text-slate-400">Current Team</h4>
+                    <div id="existingStaffList" class="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                        <!-- Loaded dynamically -->
+                    </div>
+                </div>
+
+                <div class="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2 text-xs">
+                    <h4 class="text-[10px] font-bold uppercase text-slate-400">Create New Cashier</h4>
+                    <div>
+                        <label class="block font-semibold mb-1">Username</label>
+                        <input type="text" id="staffUsername" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block font-semibold mb-1">Password / PIN</label>
+                        <input type="password" id="staffPassword" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                    </div>
+                </div>
+                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <button onclick="closeStaffModal()" class="px-3 py-1.5 text-xs text-slate-500">Close</button>
+                    <button onclick="submitNewStaff()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-1.5 rounded-xl">Create Cashier</button>
+                </div>
+            </div>
+        </div>
 
         <!-- ADD ITEM MODAL -->
         <div id="addItemModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
                     <h3 class="text-sm font-bold text-slate-900 dark:text-white">Add New Product</h3>
-                    <button onclick="closeAddItemModal()" class="text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg">&times;</button>
+                    <button onclick="closeAddItemModal()" class="text-slate-400 text-lg">&times;</button>
                 </div>
-
                 <div class="space-y-3 text-xs">
                     <div>
-                        <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Product Name & Spec</label>
-                        <input type="text" id="newItemName" placeholder="e.g., Viceroy 750ml, Panadol Extra" 
-                               class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500">
+                        <label class="block font-semibold mb-1">Product Name</label>
+                        <input type="text" id="newItemName" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                     </div>
-
                     <div class="grid grid-cols-2 gap-2">
                         <div>
-                            <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Selling Price (KES)</label>
-                            <input type="number" id="newItemPrice" placeholder="50" step="0.5" 
-                                   class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500">
+                            <label class="block font-semibold mb-1">Selling Price (KES)</label>
+                            <input type="number" id="newItemPrice" step="0.5" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                         </div>
                         <div>
-                            <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Initial Stock</label>
-                            <input type="number" id="newItemStock" placeholder="10" min="0" 
-                                   class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500">
+                            <label class="block font-semibold mb-1">Initial Stock</label>
+                            <input type="number" id="newItemStock" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                         </div>
                     </div>
                 </div>
-
-                <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeAddItemModal()" class="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-500 hover:text-slate-800 dark:hover:text-white">Cancel</button>
-                    <button onclick="submitNewItem()" class="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white font-bold text-xs px-4 py-1.5 rounded-xl transition">
-                        Save Product
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- EXCEL/CSV BULK IMPORT MODAL -->
-        <div id="importModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
-                    <div>
-                        <h3 class="text-sm font-bold text-slate-900 dark:text-white">Bulk Import Catalog</h3>
-                        <span class="text-[11px] text-slate-400">Upload CSV from Excel</span>
-                    </div>
-                    <button onclick="closeImportModal()" class="text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg">&times;</button>
-                </div>
-
-                <div class="text-xs space-y-3">
-                    <p class="text-slate-500">CSV file must include header columns: <b class="text-slate-700 dark:text-slate-300">name, unit_price, initial_stock</b></p>
-                    <input type="file" id="csvFileInput" accept=".csv" class="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 dark:file:bg-indigo-950 file:text-indigo-600 dark:file:text-indigo-400">
-                </div>
-
-                <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeImportModal()" class="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-500 hover:text-slate-800 dark:hover:text-white">Cancel</button>
-                    <button onclick="submitCsvImport()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-1.5 rounded-xl transition">
-                        Import CSV
-                    </button>
+                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <button onclick="closeAddItemModal()" class="px-3 py-1.5 text-xs text-slate-500">Cancel</button>
+                    <button onclick="submitNewItem()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-1.5 rounded-xl">Save</button>
                 </div>
             </div>
         </div>
@@ -462,30 +518,24 @@ HTML_TEMPLATE = """
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
                     <div>
-                        <h3 class="text-sm font-bold text-slate-900 dark:text-white" id="splitItemName">Item Name</h3>
-                        <span class="text-xs text-emerald-600 dark:text-emerald-400 font-bold" id="splitTotalDisplay">Total: KES 0</span>
+                        <h3 class="text-sm font-bold" id="splitItemName">Item Name</h3>
+                        <span class="text-xs text-emerald-600 font-bold" id="splitTotalDisplay">Total: KES 0</span>
                     </div>
-                    <button onclick="closeSplitModal()" class="text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg">&times;</button>
+                    <button onclick="closeSplitModal()" class="text-slate-400 text-lg">&times;</button>
                 </div>
-
                 <div class="space-y-3 text-xs">
                     <div>
-                        <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Cash Received (KES)</label>
-                        <input type="number" id="splitCashInput" oninput="autoCalculateMpesa()" placeholder="0" 
-                               class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white text-sm font-bold focus:outline-none focus:border-emerald-500">
+                        <label class="block font-semibold mb-1">Cash (KES)</label>
+                        <input type="number" id="splitCashInput" oninput="autoCalculateMpesa()" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                     </div>
                     <div>
-                        <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">M-Pesa Received (KES)</label>
-                        <input type="number" id="splitMpesaInput" placeholder="0" 
-                               class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-900 dark:text-white text-sm font-bold focus:outline-none focus:border-green-500">
+                        <label class="block font-semibold mb-1">M-Pesa (KES)</label>
+                        <input type="number" id="splitMpesaInput" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                     </div>
                 </div>
-
-                <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeSplitModal()" class="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-500 hover:text-slate-800 dark:hover:text-white">Cancel</button>
-                    <button onclick="submitSplitSale()" class="bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition">
-                        Complete Sale
-                    </button>
+                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <button onclick="closeSplitModal()" class="px-3 py-1.5 text-xs text-slate-500">Cancel</button>
+                    <button onclick="submitSplitSale()" class="bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl">Complete Sale</button>
                 </div>
             </div>
         </div>
@@ -494,41 +544,38 @@ HTML_TEMPLATE = """
 
     <!-- Bottom Navigation -->
     <nav class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800/90 pb-[env(safe-area-inset-bottom)]">
-        <div class="max-w-md mx-auto grid grid-cols-3 h-16 relative">
-            
-            <button onclick="switchTab('counter', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400 active:scale-95 transition-all">
-                <div class="w-10 h-7 rounded-full flex items-center justify-center transition-all bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800/60 shadow-sm tab-indicator">
+        <div class="max-w-md mx-auto grid {% if session.get('role') == 'admin' %}grid-cols-3{% else %}grid-cols-1{% endif %} h-16">
+            <button onclick="switchTab('counter', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600">
+                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800/60 shadow-sm tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
                 </div>
                 <span class="text-[11px] font-bold tracking-tight">Counter</span>
             </button>
-
-            <button onclick="switchTab('reports', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 active:scale-95 transition-all">
-                <div class="w-10 h-7 rounded-full flex items-center justify-center transition-all bg-transparent border border-transparent tab-indicator">
+            {% if session.get('role') == 'admin' %}
+            <button onclick="switchTab('reports', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400">
+                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
                 </div>
                 <span class="text-[11px] font-bold tracking-tight">Reports</span>
             </button>
-
-            <button onclick="switchTab('audit', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 active:scale-95 transition-all">
-                <div class="w-10 h-7 rounded-full flex items-center justify-center transition-all bg-transparent border border-transparent tab-indicator">
+            <button onclick="switchTab('audit', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400">
+                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
                 </div>
                 <span class="text-[11px] font-bold tracking-tight">Stock Take</span>
             </button>
-
+            {% endif %}
         </div>
     </nav>
 
-    <!-- Client Script -->
     <script>
-        // PWA Native Install Event Handler
+        const TODAY_STR = "{{ today_date }}";
+
         let deferredPrompt = null;
         const installBtn = document.getElementById('directInstallBtn');
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/sw.js', { scope: '/' })
-                .then(reg => console.log('SW Registered:', reg.scope))
                 .catch(err => console.error('SW Registration Failed:', err));
         }
 
@@ -540,644 +587,852 @@ HTML_TEMPLATE = """
 
         async function triggerNativeInstall() {
             if (!deferredPrompt) {
-                alert("If prompt does not show, open browser menu (⋮) -> 'Add to Home screen'.");
+                alert("To install, open browser menu (⋮) and tap 'Install app' or 'Add to Home screen'.");
                 return;
             }
             deferredPrompt.prompt();
             const { outcome } = await deferredPrompt.userChoice;
-            if (outcome === 'accepted') {
-                if (installBtn) installBtn.classList.add('hidden');
+            if (outcome === 'accepted' && installBtn) {
+                installBtn.classList.add('hidden');
             }
             deferredPrompt = null;
         }
 
         window.addEventListener('appinstalled', () => {
             if (installBtn) installBtn.classList.add('hidden');
-            showToast("Kiosk Track installed successfully! Check home screen.");
+            showToast("Kiosk Track installed successfully!");
         });
 
-        // Offline IndexedDB Engine
-        let dbPromise = indexedDB.open('KioskOfflineQueue', 1);
-        dbPromise.onupgradeneeded = (e) => {
-            let db = e.target.result;
-            if (!db.objectStoreNames.contains('pending_sales')) {
-                db.createObjectStore('pending_sales', { autoIncrement: true });
-            }
-        };
-
-        function queueOfflineSale(payload) {
-            let request = indexedDB.open('KioskOfflineQueue', 1);
-            request.onsuccess = (e) => {
-                let db = e.target.result;
-                let tx = db.transaction('pending_sales', 'readwrite');
-                tx.objectStore('pending_sales').add(payload);
-            };
-        }
-
-        async function syncOfflineSales() {
-            let request = indexedDB.open('KioskOfflineQueue', 1);
-            request.onsuccess = (e) => {
-                let db = e.target.result;
-                let tx = db.transaction('pending_sales', 'readwrite');
-                let store = tx.objectStore('pending_sales');
-                let getAll = store.openCursor();
-
-                getAll.onsuccess = async (ev) => {
-                    let cursor = ev.target.result;
-                    if (cursor) {
-                        const item = cursor.value;
-                        try {
-                            const res = await fetch('/api/sale', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(item)
-                            });
-                            if (res.ok) cursor.delete();
-                        } catch(err) {}
-                        cursor.continue();
-                    }
-                };
-            };
-        }
-
-        window.addEventListener('online', () => {
-            document.getElementById('connStatus').innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Online';
-            syncOfflineSales();
-        });
-        window.addEventListener('offline', () => {
-            document.getElementById('connStatus').innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Offline Mode';
-        });
-
-        // Theme Management
-        function applySavedTheme() {
-            const isDark = localStorage.getItem('kiosk_theme') !== 'light';
-            if (isDark) {
-                document.documentElement.classList.add('dark');
-                document.getElementById('themeIcon').innerText = '🌙';
+        function onSaleDateChange() {
+            const selected = document.getElementById('activeSaleDate').value;
+            const notice = document.getElementById('dateNotice');
+            if (selected === TODAY_STR) {
+                notice.innerHTML = "<span>🟢</span> Live Mode (Deducts Stock)";
+                notice.className = "text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1";
             } else {
-                document.documentElement.classList.remove('dark');
-                document.getElementById('themeIcon').innerText = '☀️';
+                notice.innerHTML = "<span>⚠️</span> Backdated Mode (Reports Only - Shelf Stock Preserved)";
+                notice.className = "text-[11px] font-bold text-amber-500 flex items-center gap-1";
             }
         }
-        applySavedTheme();
 
         function toggleTheme() {
-            const isDark = document.documentElement.classList.toggle('dark');
-            localStorage.setItem('kiosk_theme', isDark ? 'dark' : 'light');
-            document.getElementById('themeIcon').innerText = isDark ? '🌙' : '☀️';
-            if (chartPaymentInstance) renderChartsWithTheme();
+            document.documentElement.classList.toggle('dark');
         }
 
-        function switchTab(screenName, btnEl) {
-            document.querySelectorAll('.tab-screen').forEach(el => el.classList.add('hidden'));
-            const target = document.getElementById(`screen-${screenName}`);
-            if (target) {
-                target.classList.remove('hidden');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-
-            document.querySelectorAll('.nav-tab').forEach(tab => {
-                tab.classList.remove('text-emerald-600', 'dark:text-emerald-400');
-                tab.classList.add('text-slate-400');
-                const ind = tab.querySelector('.tab-indicator');
-                ind.className = 'w-10 h-7 rounded-full flex items-center justify-center transition-all bg-transparent border border-transparent tab-indicator';
-            });
-
-            btnEl.classList.remove('text-slate-400');
-            btnEl.classList.add('text-emerald-600', 'dark:text-emerald-400');
-            const activeInd = btnEl.querySelector('.tab-indicator');
-            activeInd.className = 'w-10 h-7 rounded-full flex items-center justify-center transition-all bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800/60 shadow-sm tab-indicator';
-
-            if (screenName === 'reports') {
-                loadReports('today');
-            }
+        function switchTab(name, btn) {
+            document.querySelectorAll('.tab-screen').forEach(s => s.classList.add('hidden'));
+            document.getElementById(`screen-${name}`)?.classList.remove('hidden');
+            if(name === 'reports') loadReports('today');
         }
 
-        function filterList(inputId, rowSelector) {
-            const input = document.getElementById(inputId).value.toLowerCase().trim();
-            document.querySelectorAll(rowSelector).forEach(row => {
-                const name = row.getAttribute('data-name').toLowerCase();
-                row.style.display = name.includes(input) ? '' : 'none';
+        function filterList(id, cls) {
+            const q = document.getElementById(id).value.toLowerCase();
+            document.querySelectorAll(cls).forEach(c => {
+                c.style.display = c.dataset.name.toLowerCase().includes(q) ? '' : 'none';
             });
         }
 
         function adjustQty(id, delta) {
             const el = document.getElementById(id);
-            let val = parseInt(el.value) || 1;
-            el.value = Math.max(1, val + delta);
+            el.value = Math.max(1, (parseInt(el.value) || 1) + delta);
         }
 
-        function showToast(message, isSuccess = true) {
-            const toast = document.getElementById('toast');
-            toast.className = `fixed top-4 left-1/2 -translate-x-1/2 z-50 p-3 rounded-2xl text-xs font-bold shadow-2xl flex items-center gap-2 border transition-all duration-300 max-w-sm w-11/12 ${
-                isSuccess 
-                ? 'bg-emerald-900/90 text-emerald-200 border-emerald-700 backdrop-blur' 
-                : 'bg-rose-900/90 text-rose-200 border-rose-700 backdrop-blur'
-            }`;
-            toast.innerHTML = `<span>${isSuccess ? '✓' : '⚠'}</span> <span>${message}</span>`;
-            toast.classList.remove('opacity-0', '-translate-y-2');
-            toast.classList.add('opacity-100', 'translate-y-0');
-
+        function showToast(msg, ok = true) {
+            const t = document.getElementById('toast');
+            t.className = `fixed top-4 left-1/2 -translate-x-1/2 z-50 p-3 rounded-2xl text-xs font-bold shadow-2xl flex items-center gap-2 border transition-all duration-300 max-w-sm w-11/12 ${ok ? 'bg-emerald-900/90 text-emerald-200 border-emerald-700' : 'bg-rose-900/90 text-rose-200 border-rose-700'}`;
+            t.innerText = msg;
+            t.classList.remove('opacity-0', '-translate-y-2', 'pointer-events-none');
+            t.classList.add('opacity-100', 'translate-y-0');
             setTimeout(() => {
-                toast.classList.add('opacity-0', '-translate-y-2');
-                toast.classList.remove('opacity-100', 'translate-y-0');
+                t.classList.add('opacity-0', '-translate-y-2', 'pointer-events-none');
+                t.classList.remove('opacity-100', 'translate-y-0');
             }, 2500);
         }
 
-        // Sale API
         async function makeSale(itemId, payment) {
-            const qtyInput = document.getElementById(`qty-${itemId}`);
-            const qty = parseInt(qtyInput.value) || 1;
-            const payload = { item_id: itemId, quantity: qty, payment_method: payment };
-
-            if (!navigator.onLine) {
-                queueOfflineSale(payload);
-                const valEl = document.getElementById(`stock-val-${itemId}`);
-                valEl.innerText = (parseInt(valEl.innerText) || 0) - qty;
-                showToast(`Offline: Sale queued for sync`, true);
-                qtyInput.value = 1;
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/sale', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const data = await res.json();
-                if (!res.ok) {
-                    showToast(data.error || 'Sale failed', false);
-                    return;
-                }
-
-                updateStockUI(itemId, data.new_stock, data.reorder_level);
-                document.getElementById('statCash').innerText = `KES ${Math.round(data.today_cash).toLocaleString()}`;
-                document.getElementById('statMpesa').innerText = `KES ${Math.round(data.today_mpesa).toLocaleString()}`;
-                document.getElementById('statTotal').innerText = `KES ${Math.round(data.today_cash + data.today_mpesa).toLocaleString()}`;
-
-                showToast(`Sold ${qty}x ${data.item_name} via ${payment}`);
-                qtyInput.value = 1;
-            } catch (err) {
-                queueOfflineSale(payload);
-                showToast('Network drop: Queued in offline storage', true);
-            }
-        }
-
-        // Reversal API
-        async function reverseSale(itemId) {
-            const qtyInput = document.getElementById(`qty-${itemId}`);
-            const qty = parseInt(qtyInput.value) || 1;
-
-            if (!confirm(`Reverse sale of ${qty} unit(s)? This will return item to stock and refund today's totals.`)) {
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/sale/reverse', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ item_id: itemId, quantity: qty, payment_method: 'CASH' })
-                });
-                const data = await res.json();
-                if (!res.ok) {
-                    showToast(data.error || 'Reversal failed', false);
-                    return;
-                }
-
-                updateStockUI(itemId, data.new_stock, data.reorder_level);
-                document.getElementById('statCash').innerText = `KES ${Math.round(data.today_cash).toLocaleString()}`;
-                document.getElementById('statMpesa').innerText = `KES ${Math.round(data.today_mpesa).toLocaleString()}`;
-                document.getElementById('statTotal').innerText = `KES ${Math.round(data.today_cash + data.today_mpesa).toLocaleString()}`;
-
-                showToast(`↩ Returned ${qty}x ${data.item_name} to stock`);
-            } catch (err) {
-                showToast('Connection error', false);
-            }
-        }
-
-        // Restock API
-        async function makeRestock(itemId) {
-            const restockInput = document.getElementById(`restock-qty-${itemId}`);
-            const qty = parseInt(restockInput.value);
-            if (!qty || qty <= 0) {
-                showToast('Enter quantity to restock', false);
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/restock', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ item_id: itemId, quantity: qty })
-                });
-                const data = await res.json();
-                if (!res.ok) {
-                    showToast(data.error || 'Restock failed', false);
-                    return;
-                }
-
-                updateStockUI(itemId, data.new_stock, data.reorder_level);
-                showToast(`Stock updated: now ${data.new_stock} pcs on shelf`);
-                restockInput.value = '';
-            } catch (err) {
-                showToast('Connection error', false);
-            }
-        }
-
-        // Soft Delete / Archive Item API
-        async function archiveItem(itemId, itemName) {
-            if (!confirm(`Discontinue '${itemName}'? It will be removed from your active shelf without losing past sales records.`)) {
-                return;
-            }
-
-            try {
-                const res = await fetch(`/api/items/archive/${itemId}`, { method: 'POST' });
-                const data = await res.json();
-                if (data.success) {
-                    document.getElementById(`item-card-${itemId}`)?.remove();
-                    showToast(`Archived ${itemName}`);
-                }
-            } catch (err) {
-                showToast('Failed to archive product', false);
-            }
-        }
-
-        function updateStockUI(itemId, currentStock, reorderLevel) {
-            const valEl = document.getElementById(`stock-val-${itemId}`);
-            const badgeEl = document.getElementById(`badge-${itemId}`);
-            if (valEl) valEl.innerText = currentStock;
-
-            const auditSys = document.getElementById(`audit-sys-${itemId}`);
-            if (auditSys) auditSys.innerText = currentStock;
-
-            if (badgeEl) {
-                badgeEl.className = 'px-2.5 py-1 rounded-full text-xs font-bold ';
-                if (currentStock <= 0) {
-                    badgeEl.className += 'bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-800';
-                } else if (currentStock <= reorderLevel) {
-                    badgeEl.className += 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800';
-                } else {
-                    badgeEl.className += 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700';
-                }
-            }
-        }
-
-        // Split Payment Functions
-        let activeSplitItemId = null;
-        let activeSplitTotalPrice = 0;
-        let activeSplitQty = 1;
-
-        function openSplitModal(itemId, name, unitPrice) {
-            activeSplitItemId = itemId;
-            const qtyInput = document.getElementById(`qty-${itemId}`);
-            activeSplitQty = parseInt(qtyInput ? qtyInput.value : 1) || 1;
-            activeSplitTotalPrice = unitPrice * activeSplitQty;
-
-            document.getElementById('splitItemName').innerText = `${activeSplitQty}x ${name}`;
-            document.getElementById('splitTotalDisplay').innerText = `Total Due: KES ${activeSplitTotalPrice.toLocaleString()}`;
-            document.getElementById('splitCashInput').value = '';
-            document.getElementById('splitMpesaInput').value = activeSplitTotalPrice;
-            document.getElementById('splitModal').classList.remove('hidden');
-            document.getElementById('splitCashInput').focus();
-        }
-
-        function autoCalculateMpesa() {
-            const cash = parseFloat(document.getElementById('splitCashInput').value) || 0;
-            const remainder = Math.max(0, activeSplitTotalPrice - cash);
-            document.getElementById('splitMpesaInput').value = remainder;
-        }
-
-        function closeSplitModal() {
-            document.getElementById('splitModal').classList.add('hidden');
-            activeSplitItemId = null;
-        }
-
-        async function submitSplitSale() {
-            const cash = parseFloat(document.getElementById('splitCashInput').value) || 0;
-            const mpesa = parseFloat(document.getElementById('splitMpesaInput').value) || 0;
-
-            if (Math.round(cash + mpesa) !== Math.round(activeSplitTotalPrice)) {
-                showToast(`Sum must equal KES ${activeSplitTotalPrice}`, false);
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/sale/split', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        item_id: activeSplitItemId,
-                        quantity: activeSplitQty,
-                        cash_amount: cash,
-                        mpesa_amount: mpesa
-                    })
-                });
-                const data = await res.json();
-                if (!res.ok) {
-                    showToast(data.error || 'Sale failed', false);
-                    return;
-                }
-
-                updateStockUI(activeSplitItemId, data.new_stock, data.reorder_level);
-                document.getElementById('statCash').innerText = `KES ${Math.round(data.today_cash).toLocaleString()}`;
-                document.getElementById('statMpesa').innerText = `KES ${Math.round(data.today_mpesa).toLocaleString()}`;
-                document.getElementById('statTotal').innerText = `KES ${Math.round(data.today_cash + data.today_mpesa).toLocaleString()}`;
-
-                showToast(`Split Sale completed`);
-                closeSplitModal();
-            } catch (err) {
-                showToast("Connection error", false);
-            }
-        }
-
-        // Reports & Interactive Charts
-        let chartPaymentInstance = null;
-        let chartTopItemsInstance = null;
-        let lastReportData = null;
-
-        function setReportRange(range, btnEl) {
-            document.querySelectorAll('.report-range-btn').forEach(b => {
-                b.className = 'report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white';
+            const qty = parseInt(document.getElementById(`qty-${itemId}`).value) || 1;
+            const saleDate = document.getElementById('activeSaleDate').value;
+            const res = await fetch('/api/sale', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: itemId, quantity: qty, payment_method: payment, sale_date: saleDate })
             });
-            btnEl.className = 'report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white';
+            const d = await res.json();
+            if (res.ok) {
+                document.getElementById(`stock-val-${itemId}`).innerText = d.new_stock;
+                const auditVal = document.getElementById(`audit-sys-${itemId}`);
+                if (auditVal) auditVal.innerText = d.new_stock;
+                document.getElementById('statCash').innerText = `KES ${Math.round(d.today_cash).toLocaleString()}`;
+                document.getElementById('statMpesa').innerText = `KES ${Math.round(d.today_mpesa).toLocaleString()}`;
+                document.getElementById('statTotal').innerText = `KES ${Math.round(d.today_cash + d.today_mpesa).toLocaleString()}`;
+                showToast(`Recorded sale for ${saleDate}`);
+            } else {
+                showToast(d.error || 'Sale failed', false);
+            }
+        }
+
+        let activeSplitId = null, activeSplitTotal = 0, activeSplitQty = 1;
+        function openSplitModal(id, name, price) {
+            activeSplitId = id;
+            activeSplitQty = parseInt(document.getElementById(`qty-${id}`).value) || 1;
+            activeSplitTotal = price * activeSplitQty;
+            document.getElementById('splitItemName').innerText = `${activeSplitQty}x ${name}`;
+            document.getElementById('splitTotalDisplay').innerText = `Total Due: KES ${activeSplitTotal.toLocaleString()}`;
+            document.getElementById('splitCashInput').value = '';
+            document.getElementById('splitMpesaInput').value = activeSplitTotal;
+            document.getElementById('splitModal').classList.remove('hidden');
+        }
+        function closeSplitModal() { document.getElementById('splitModal').classList.add('hidden'); }
+        function autoCalculateMpesa() {
+            const c = parseFloat(document.getElementById('splitCashInput').value) || 0;
+            document.getElementById('splitMpesaInput').value = Math.max(0, activeSplitTotal - c);
+        }
+        async function submitSplitSale() {
+            const c = parseFloat(document.getElementById('splitCashInput').value) || 0;
+            const m = parseFloat(document.getElementById('splitMpesaInput').value) || 0;
+            const saleDate = document.getElementById('activeSaleDate').value;
+            const res = await fetch('/api/sale/split', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: activeSplitId, quantity: activeSplitQty, cash_amount: c, mpesa_amount: m, sale_date: saleDate })
+            });
+            const d = await res.json();
+            if(res.ok) {
+                document.getElementById(`stock-val-${activeSplitId}`).innerText = d.new_stock;
+                document.getElementById('statCash').innerText = `KES ${Math.round(d.today_cash).toLocaleString()}`;
+                document.getElementById('statMpesa').innerText = `KES ${Math.round(d.today_mpesa).toLocaleString()}`;
+                document.getElementById('statTotal').innerText = `KES ${Math.round(d.today_cash + d.today_mpesa).toLocaleString()}`;
+                showToast("Split sale recorded!");
+                closeSplitModal();
+            } else {
+                showToast(d.error || 'Error recording split', false);
+            }
+        }
+
+        async function reverseSale(id) {
+            const q = parseInt(document.getElementById(`qty-${id}`).value) || 1;
+            const res = await fetch('/api/sale/reverse', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: id, quantity: q })
+            });
+            const d = await res.json();
+            if(res.ok) {
+                document.getElementById(`stock-val-${id}`).innerText = d.new_stock;
+                const auditVal = document.getElementById(`audit-sys-${id}`);
+                if (auditVal) auditVal.innerText = d.new_stock;
+                showToast(`Returned: Added ${q} pcs back to shelf`);
+            }
+        }
+
+        async function updateStockTake(id) {
+            const val = parseInt(document.getElementById(`counted-${id}`).value);
+            if (isNaN(val)) {
+                showToast("Enter a valid shelf count", false);
+                return;
+            }
+            const res = await fetch('/api/stocktake/update-count', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: id, counted_quantity: val })
+            });
+            const d = await res.json();
+            if(res.ok) {
+                document.getElementById(`stock-val-${id}`).innerText = d.new_stock;
+                const auditVal = document.getElementById(`audit-sys-${id}`);
+                if (auditVal) auditVal.innerText = d.new_stock;
+                showToast(`Shelf count updated to ${d.new_stock}`);
+            }
+        }
+
+        async function makeRestock(id) {
+            const q = parseInt(document.getElementById(`restock-qty-${id}`).value) || 0;
+            const res = await fetch('/api/restock', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: id, quantity: q })
+            });
+            const d = await res.json();
+            if(res.ok) {
+                document.getElementById(`stock-val-${id}`).innerText = d.new_stock;
+                showToast(`Restocked ${d.new_stock} pcs`);
+            }
+        }
+
+        function setReportRange(range, btn) {
+            document.querySelectorAll('.report-range-btn').forEach(b => {
+                b.className = 'report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400';
+            });
+            btn.className = 'report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white';
             loadReports(range);
         }
 
         async function loadReports(range) {
-            try {
-                const res = await fetch(`/api/reports?range=${range}`);
-                const data = await res.json();
-                lastReportData = data;
-                renderReportDashboard(data);
-            } catch (err) {
-                showToast('Could not load reports', false);
-            }
-        }
+            const res = await fetch(`/api/reports?range=${range}`);
+            const d = await res.json();
+            document.getElementById('repTotalRev').innerText = `KES ${Math.round(d.summary.total_revenue).toLocaleString()}`;
+            document.getElementById('repTotalUnits').innerText = `${d.summary.total_units} pcs`;
+            document.getElementById('repCash').innerText = `KES ${Math.round(d.summary.cash).toLocaleString()}`;
+            document.getElementById('repMpesa').innerText = `KES ${Math.round(d.summary.mpesa).toLocaleString()}`;
 
-        async function fetchCustomReports() {
-            const start = document.getElementById('reportStart').value;
-            const end = document.getElementById('reportEnd').value;
-            if (!start || !end) {
-                showToast('Select start and end dates', false);
-                return;
-            }
-
-            try {
-                const res = await fetch(`/api/reports?range=custom&start_date=${start}&end_date=${end}`);
-                const data = await res.json();
-                lastReportData = data;
-                renderReportDashboard(data);
-            } catch (err) {
-                showToast('Could not load custom report', false);
-            }
-        }
-
-        function renderReportDashboard(data) {
-            document.getElementById('repTotalRev').innerText = `KES ${Math.round(data.summary.total_revenue).toLocaleString()}`;
-            document.getElementById('repTotalUnits').innerText = `${data.summary.total_units} pcs`;
-            document.getElementById('repCash').innerText = `KES ${Math.round(data.summary.cash).toLocaleString()}`;
-            document.getElementById('repMpesa').innerText = `KES ${Math.round(data.summary.mpesa).toLocaleString()}`;
-
-            const renderList = (id, items, isVal) => {
-                const el = document.getElementById(id);
-                if (!items || items.length === 0) {
-                    el.innerHTML = '<li class="py-2 text-slate-400 text-center">No transactions recorded</li>';
-                    return;
-                }
-                el.innerHTML = items.map((it, idx) => `
-                    <li class="py-1.5 flex justify-between items-center">
-                        <span class="truncate pr-2">${idx + 1}. ${it.name}</span>
-                        <span class="font-bold font-mono ${isVal ? 'text-indigo-600 dark:text-indigo-300' : 'text-emerald-600 dark:text-emerald-400'}">
-                            ${isVal ? 'KES ' + Math.round(it.total_sales_val).toLocaleString() : it.total_units_sold + ' pcs'}
-                        </span>
-                    </li>
+            const tbody = document.getElementById('staffTableBody');
+            if (d.staff && d.staff.length > 0) {
+                tbody.innerHTML = d.staff.map(s => `
+                    <tr>
+                        <td class="py-2.5 font-bold text-slate-900 dark:text-white">@${s.username}</td>
+                        <td class="py-2.5 text-slate-500 uppercase text-[10px] font-semibold">${s.role}</td>
+                        <td class="py-2.5 font-mono">${s.tx_count}</td>
+                        <td class="py-2.5 text-emerald-600 dark:text-emerald-400 font-semibold font-mono">KES ${Math.round(s.cash_amount).toLocaleString()}</td>
+                        <td class="py-2.5 text-green-600 dark:text-green-400 font-semibold font-mono">KES ${Math.round(s.mpesa_amount).toLocaleString()}</td>
+                        <td class="py-2.5 font-black text-slate-900 dark:text-white font-mono">KES ${Math.round(s.total_amount).toLocaleString()}</td>
+                    </tr>
                 `).join('');
-            };
-
-            renderList('listTopQty', data.top_qty, false);
-            renderList('listTopRev', data.top_revenue, true);
-            renderList('listLowestQty', data.lowest_qty, false);
-            renderList('listDivergence', data.high_qty_low_rev, false);
-
-            renderInteractiveCharts(data);
+            } else {
+                tbody.innerHTML = `<tr><td colspan="6" class="py-3 text-center text-slate-400">No staff sales recorded for this period</td></tr>`;
+            }
         }
 
-        function renderInteractiveCharts(data) {
-            const isDark = document.documentElement.classList.contains('dark');
-            const textColor = isDark ? '#94a3b8' : '#475569';
+        async function openStaffModal() {
+            document.getElementById('staffModal').classList.remove('hidden');
+            const res = await fetch('/api/staff/list');
+            const data = await res.json();
+            const listEl = document.getElementById('existingStaffList');
+            if (data.users && data.users.length > 0) {
+                listEl.innerHTML = data.users.map(u => `
+                    <div class="py-2 flex items-center justify-between">
+                        <div>
+                            <span class="font-bold">@${u.username}</span> 
+                            <span class="text-[10px] text-slate-400 uppercase">(${u.role})</span>
+                        </div>
+                        ${u.role !== 'admin' ? `
+                            <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">
+                                Reset Password
+                            </button>
+                        ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
+                    </div>
+                `).join('');
+            }
+        }
 
-            const ctxPay = document.getElementById('chartPayment').getContext('2d');
-            if (chartPaymentInstance) chartPaymentInstance.destroy();
+        function closeStaffModal() { document.getElementById('staffModal').classList.add('hidden'); }
 
-            const cashVal = Math.max(0, data.summary.cash);
-            const mpesaVal = Math.max(0, data.summary.mpesa);
-
-            chartPaymentInstance = new Chart(ctxPay, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Cash', 'M-Pesa'],
-                    datasets: [{
-                        data: (cashVal === 0 && mpesaVal === 0) ? [1] : [cashVal, mpesaVal],
-                        backgroundColor: (cashVal === 0 && mpesaVal === 0) ? ['#334155'] : ['#10b981', '#22c55e'],
-                        borderWidth: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'bottom', labels: { color: textColor, font: { size: 10, weight: 'bold' } } }
-                    },
-                    cutout: '70%'
-                }
+        async function resetStaffPassword(userId, username) {
+            const newPass = prompt(`Enter new password / PIN for @${username}:`);
+            if (!newPass) return;
+            const res = await fetch('/api/staff/reset-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId, new_password: newPass })
             });
+            const d = await res.json();
+            if (res.ok) {
+                showToast(`Password updated for @${username}`);
+            } else {
+                showToast(d.error || 'Failed to update password', false);
+            }
+        }
 
-            const ctxTop = document.getElementById('chartTopItems').getContext('2d');
-            if (chartTopItemsInstance) chartTopItemsInstance.destroy();
-
-            const top5 = (data.top_qty || []).slice(0, 5);
-            chartTopItemsInstance = new Chart(ctxTop, {
-                type: 'bar',
-                data: {
-                    labels: top5.map(i => i.name.length > 14 ? i.name.substring(0, 12) + '..' : i.name),
-                    datasets: [{
-                        label: 'Units Sold',
-                        data: top5.map(i => i.total_units_sold),
-                        backgroundColor: '#6366f1',
-                        borderRadius: 6
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    indexAxis: 'y',
-                    scales: {
-                        x: { ticks: { color: textColor, stepSize: 1 }, grid: { display: false } },
-                        y: { ticks: { color: textColor, font: { size: 10 } }, grid: { display: false } }
-                    },
-                    plugins: {
-                        legend: { display: false }
-                    }
-                }
+        async function submitNewStaff() {
+            const u = document.getElementById('staffUsername').value.trim();
+            const p = document.getElementById('staffPassword').value;
+            const res = await fetch('/api/staff/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: u, password: p, role: 'cashier' })
             });
-        }
-
-        function renderChartsWithTheme() {
-            if (lastReportData) renderInteractiveCharts(lastReportData);
-        }
-
-        // Wipe Sales Ledger Memory
-        async function confirmWipeAllSalesHistory() {
-            const promptVal = prompt("Type 'CLEAR' to erase all sales history and restore cash/totals to KES 0:");
-            if (promptVal !== 'CLEAR') {
-                showToast("Action cancelled", false);
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/admin/clear-all-transactions', { method: 'POST' });
-                const data = await res.json();
-                if (data.success) {
-                    showToast("All historical transactions cleared!");
-                    setTimeout(() => location.reload(), 800);
-                }
-            } catch (err) {
-                showToast("Failed to erase memory", false);
+            const d = await res.json();
+            if (res.ok) {
+                showToast(`Cashier ${u} created!`);
+                openStaffModal();
+                document.getElementById('staffUsername').value = '';
+                document.getElementById('staffPassword').value = '';
+            } else {
+                showToast(d.error || 'Failed to create user', false);
             }
         }
 
-        // Stock Take API
-        async function confirmResetAllZero() {
-            if (!confirm("Reset all current stock numbers to 0 for a physical stock-take? Sales history will be preserved.")) {
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/stocktake/reset-all-zero', { method: 'POST' });
-                const data = await res.json();
-                if (data.success) {
-                    showToast("All items set to 0. Enter your shelf counts.");
-                    document.querySelectorAll('[id^="stock-val-"]').forEach(el => el.innerText = '0');
-                    document.querySelectorAll('[id^="audit-sys-"]').forEach(el => el.innerText = '0');
-                }
-            } catch (err) {
-                showToast("Failed to reset inventory", false);
-            }
-        }
-
-        async function updateStockTake(itemId) {
-            const countedInput = document.getElementById(`counted-${itemId}`);
-            const countVal = countedInput.value;
-            if (countVal === '' || isNaN(parseInt(countVal))) {
-                showToast('Enter valid physical count', false);
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/stocktake/update-count', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ item_id: itemId, counted_quantity: parseInt(countVal) })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    updateStockUI(itemId, data.new_stock, 5);
-                    showToast(`Updated ${data.item_name} to ${data.new_stock} pcs`);
-                    countedInput.value = '';
-                } else {
-                    showToast(data.error || 'Failed to update count', false);
-                }
-            } catch (err) {
-                showToast('Failed to save stock take count', false);
-            }
-        }
-
-        // Add Single Item Modal
-        function openAddItemModal() {
-            document.getElementById('addItemModal').classList.remove('hidden');
-            document.getElementById('newItemName').focus();
-        }
-
-        function closeAddItemModal() {
-            document.getElementById('addItemModal').classList.add('hidden');
-            document.getElementById('newItemName').value = '';
-            document.getElementById('newItemPrice').value = '';
-            document.getElementById('newItemStock').value = '';
-        }
-
+        function openAddItemModal() { document.getElementById('addItemModal').classList.remove('hidden'); }
+        function closeAddItemModal() { document.getElementById('addItemModal').classList.add('hidden'); }
         async function submitNewItem() {
             const name = document.getElementById('newItemName').value.trim();
             const price = parseFloat(document.getElementById('newItemPrice').value);
             const stock = parseInt(document.getElementById('newItemStock').value) || 0;
-
-            if (!name || isNaN(price) || price < 0) {
-                showToast("Please provide valid name and price", false);
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/items/add', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, unit_price: price, initial_stock: stock })
-                });
-                const data = await res.json();
-
-                if (!res.ok) {
-                    showToast(data.error || 'Failed to add item', false);
-                    return;
-                }
-
-                showToast(`Added ${data.name} (KES ${data.unit_price})`);
-                closeAddItemModal();
-                setTimeout(() => location.reload(), 600);
-            } catch (err) {
-                showToast("Network error while adding item", false);
-            }
-        }
-
-        // CSV Import Modal
-        function openImportModal() {
-            document.getElementById('importModal').classList.remove('hidden');
-        }
-
-        function closeImportModal() {
-            document.getElementById('importModal').classList.add('hidden');
-            document.getElementById('csvFileInput').value = '';
-        }
-
-        async function submitCsvImport() {
-            const fileInput = document.getElementById('csvFileInput');
-            if (!fileInput.files || fileInput.files.length === 0) {
-                showToast("Select a CSV file first", false);
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-
-            try {
-                const res = await fetch('/api/items/import-csv', {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(`Successfully imported ${data.imported_count} products!`);
-                    closeImportModal();
-                    setTimeout(() => location.reload(), 800);
-                } else {
-                    showToast(data.error || 'Import failed', false);
-                }
-            } catch (err) {
-                showToast('Error uploading CSV file', false);
-            }
+            const res = await fetch('/api/items/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, unit_price: price, initial_stock: stock })
+            });
+            if(res.ok) { location.reload(); }
+            else { const d = await res.json(); showToast(d.error || 'Error adding item', false); }
         }
     </script>
 </body>
 </html>
 """
+
+AUTH_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Kiosk Track</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-2xl">
+        <h1 class="text-xl font-black text-center mb-1 text-white tracking-tight">Kiosk Track</h1>
+        <p class="text-xs text-slate-400 text-center mb-6">Cloud Inventory & Point of Sale</p>
+
+        {% if error %}
+        <div class="bg-rose-950/80 border border-rose-800 text-rose-300 text-xs p-3 rounded-xl mb-4 text-center font-semibold">
+            {{ error }}
+        </div>
+        {% endif %}
+        {% if message %}
+        <div class="bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs p-3 rounded-xl mb-4 text-center font-semibold">
+            {{ message }}
+        </div>
+        {% endif %}
+
+        <form method="POST" action="{{ action_url }}" class="space-y-3.5 text-xs">
+            {% if mode == 'register' %}
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Shop Name</label>
+                <input type="text" name="shop_name" required placeholder="e.g. Westlands Mini Mart" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Your Mobile Phone</label>
+                <input type="tel" name="phone" required placeholder="e.g. 0712345678" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Admin Username</label>
+                <input type="text" name="username" required placeholder="Enter username" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
+                <input type="password" name="password" required placeholder="••••••••" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN (Used if you forget password)</label>
+                <input type="password" name="recovery_pin" maxlength="4" required placeholder="4-digit PIN (e.g. 1997)" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+
+            {% elif mode == 'forgot' %}
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Registered Phone Number</label>
+                <input type="tel" name="phone" required placeholder="e.g. 0712345678" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN</label>
+                <input type="password" name="recovery_pin" maxlength="4" required placeholder="••••" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">New Password</label>
+                <input type="password" name="new_password" required placeholder="Enter new password" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+
+            {% else %}
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Username or Phone</label>
+                <input type="text" name="login_identifier" required placeholder="Enter username or phone" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+            <div>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
+                <input type="password" name="password" required placeholder="••••••••" 
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+            </div>
+            {% endif %}
+
+            <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2.5 rounded-xl transition text-xs shadow-lg mt-2">
+                {{ button_text }}
+            </button>
+        </form>
+
+        <div class="mt-6 pt-4 border-t border-slate-800 text-center text-xs space-y-2">
+            {% if mode == 'login' %}
+            <div><a href="/forgot-password" class="text-slate-400 hover:text-white">Forgot Password?</a></div>
+            <div><span class="text-slate-500">Want to run your shop?</span> <a href="/register-shop" class="text-emerald-400 font-bold hover:underline">Register New Shop</a></div>
+            {% elif mode == 'register' %}
+            <div><span class="text-slate-500">Already registered?</span> <a href="/login" class="text-emerald-400 font-bold hover:underline">Log In</a></div>
+            {% else %}
+            <div><a href="/login" class="text-emerald-400 font-bold hover:underline">Back to Login</a></div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+# --- Routes ---
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        identifier = request.form.get("login_identifier", "").strip()
+        password = request.form.get("password", "")
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT u.user_id, u.shop_id, u.username, u.password_hash, u.role, s.name as shop_name
+            FROM users u
+            JOIN shops s ON u.shop_id = s.shop_id
+            WHERE u.username = ? OR u.phone = ?
+        """, (identifier, identifier))
+        user = cursor.fetchone()
+        conn.close()
+
+        if user and check_password_hash(user["password_hash"], password):
+            session["user_id"] = user["user_id"]
+            session["shop_id"] = user["shop_id"]
+            session["username"] = user["username"]
+            session["role"] = user["role"]
+            session["shop_name"] = user["shop_name"]
+            return redirect(url_for("index"))
+        return render_template_string(AUTH_TEMPLATE, mode="login", action_url="/login", button_text="Sign In", error="Invalid login credentials")
+
+    return render_template_string(AUTH_TEMPLATE, mode="login", action_url="/login", button_text="Sign In", error=None)
+
+
+@app.route("/register-shop", methods=["GET", "POST"])
+def register_shop():
+    if request.method == "POST":
+        shop_name = request.form.get("shop_name", "").strip()
+        phone = request.form.get("phone", "").strip()
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        recovery_pin = request.form.get("recovery_pin", "").strip()
+
+        if not shop_name or not username or not password or not phone or not recovery_pin:
+            return render_template_string(AUTH_TEMPLATE, mode="register", action_url="/register-shop", button_text="Register Business", error="Please fill all fields")
+
+        conn = get_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("INSERT INTO shops (name) VALUES (?)", (shop_name,))
+            shop_id = cursor.lastrowid
+            cursor.execute("""
+                INSERT INTO users (shop_id, username, phone, recovery_pin, password_hash, role)
+                VALUES (?, ?, ?, ?, ?, 'admin')
+            """, (shop_id, username, phone, recovery_pin, generate_password_hash(password)))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            return render_template_string(AUTH_TEMPLATE, mode="register", action_url="/register-shop", button_text="Register Business", error="Username already registered")
+        
+        conn.close()
+        return redirect(url_for("login"))
+
+    return render_template_string(AUTH_TEMPLATE, mode="register", action_url="/register-shop", button_text="Register Business", error=None)
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        phone = request.form.get("phone", "").strip()
+        pin = request.form.get("recovery_pin", "").strip()
+        new_password = request.form.get("new_password", "")
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, username FROM users WHERE phone = ? AND recovery_pin = ? AND role = 'admin'", (phone, pin))
+        user = cursor.fetchone()
+
+        if not user:
+            conn.close()
+            return render_template_string(AUTH_TEMPLATE, mode="forgot", action_url="/forgot-password", button_text="Reset Password", error="Phone number or Recovery PIN did not match")
+
+        cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", (generate_password_hash(new_password), user["user_id"]))
+        conn.commit()
+        conn.close()
+        return render_template_string(AUTH_TEMPLATE, mode="login", action_url="/login", button_text="Sign In", message="Password reset successful! You can now log in.")
+
+    return render_template_string(AUTH_TEMPLATE, mode="forgot", action_url="/forgot-password", button_text="Reset Password", error=None)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/")
+@login_required
+def index():
+    shop_id = session["shop_id"]
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM items WHERE shop_id = ? AND is_active = 1 ORDER BY name ASC;", (shop_id,))
+    items = cursor.fetchall()
+
+    cursor.execute("""
+        SELECT 
+            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
+            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
+        FROM transactions
+        WHERE shop_id = ? AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+    """, (shop_id,))
+    totals = cursor.fetchone()
+    conn.close()
+
+    today_str = date.today().isoformat()
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        items=items,
+        today_cash=totals["cash_total"],
+        today_mpesa=totals["mpesa_total"],
+        today_date=today_str
+    )
+
+
+@app.route("/api/staff/list", methods=["GET"])
+@admin_required
+def list_staff():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? ORDER BY role ASC, username ASC;", (session["shop_id"],))
+    users = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"users": users})
+
+
+@app.route("/api/staff/create", methods=["POST"])
+@admin_required
+def create_staff():
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password")
+    role = data.get("role", "cashier")
+
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO users (shop_id, username, password_hash, role)
+            VALUES (?, ?, ?, ?)
+        """, (session["shop_id"], username, generate_password_hash(password), role))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Username already taken"}), 400
+
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/staff/reset-password", methods=["POST"])
+@admin_required
+def admin_reset_staff_password():
+    data = request.get_json() or {}
+    user_id = int(data.get("user_id", 0))
+    new_password = data.get("new_password", "")
+
+    if not new_password:
+        return jsonify({"error": "New password cannot be empty"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND shop_id = ? AND role != 'admin'", 
+                   (generate_password_hash(new_password), user_id, session["shop_id"]))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/sale", methods=["POST"])
+@login_required
+def api_sale():
+    data = request.get_json() or {}
+    item_id = int(data.get("item_id", 0))
+    qty = int(data.get("quantity", 1))
+    payment = data.get("payment_method", "CASH")
+    sale_date = data.get("sale_date") or date.today().isoformat()
+    shop_id = session["shop_id"]
+    user_id = session["user_id"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND shop_id = ?", (item_id, shop_id))
+    item = cursor.fetchone()
+
+    if not item:
+        conn.close()
+        return jsonify({"error": "Item not found"}), 404
+
+    total = qty * item["unit_price"]
+    
+    cursor.execute("""
+        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
+        VALUES (?, ?, ?, 'OUT', ?, ?, ?, ?, datetime(?, '12:00:00'))
+    """, (shop_id, user_id, item_id, payment, qty, item["unit_price"], total, sale_date))
+
+    if sale_date == date.today().isoformat():
+        cursor.execute("UPDATE items SET current_stock = current_stock - ? WHERE item_id = ?", (qty, item_id))
+
+    cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
+    new_stock = cursor.fetchone()["current_stock"]
+
+    cursor.execute("""
+        SELECT 
+            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
+            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
+        FROM transactions
+        WHERE shop_id = ? AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+    """, (shop_id,))
+    totals = cursor.fetchone()
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "new_stock": new_stock,
+        "today_cash": totals["cash_total"],
+        "today_mpesa": totals["mpesa_total"]
+    })
+
+
+@app.route("/api/sale/split", methods=["POST"])
+@login_required
+def api_sale_split():
+    data = request.get_json() or {}
+    item_id = int(data.get("item_id", 0))
+    qty = int(data.get("quantity", 1))
+    cash_amount = float(data.get("cash_amount", 0.0))
+    mpesa_amount = float(data.get("mpesa_amount", 0.0))
+    sale_date = data.get("sale_date") or date.today().isoformat()
+    shop_id = session["shop_id"]
+    user_id = session["user_id"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND shop_id = ?", (item_id, shop_id))
+    item = cursor.fetchone()
+
+    if not item:
+        conn.close()
+        return jsonify({"error": "Item not found"}), 404
+
+    cursor.execute("""
+        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
+        VALUES (?, ?, ?, 'OUT', 'CASH', ?, ?, ?, datetime(?, '12:00:00'))
+    """, (shop_id, user_id, item_id, qty, item["unit_price"], cash_amount, sale_date))
+
+    cursor.execute("""
+        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
+        VALUES (?, ?, ?, 'OUT', 'MPESA', 0, ?, ?, datetime(?, '12:00:00'))
+    """, (shop_id, user_id, item_id, item["unit_price"], mpesa_amount, sale_date))
+
+    if sale_date == date.today().isoformat():
+        cursor.execute("UPDATE items SET current_stock = current_stock - ? WHERE item_id = ?", (qty, item_id))
+
+    cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
+    new_stock = cursor.fetchone()["current_stock"]
+
+    cursor.execute("""
+        SELECT 
+            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
+            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
+        FROM transactions
+        WHERE shop_id = ? AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+    """, (shop_id,))
+    totals = cursor.fetchone()
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "new_stock": new_stock,
+        "today_cash": totals["cash_total"],
+        "today_mpesa": totals["mpesa_total"]
+    })
+
+
+@app.route("/api/sale/reverse", methods=["POST"])
+@admin_required
+def api_sale_reverse():
+    data = request.get_json() or {}
+    item_id = int(data.get("item_id", 0))
+    qty = int(data.get("quantity", 1))
+    shop_id = session["shop_id"]
+    user_id = session["user_id"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND shop_id = ?", (item_id, shop_id))
+    item = cursor.fetchone()
+
+    total = qty * item["unit_price"]
+    cursor.execute("UPDATE items SET current_stock = current_stock + ? WHERE item_id = ?", (qty, item_id))
+
+    cursor.execute("""
+        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+        VALUES (?, ?, ?, 'IN', 'CASH', ?, ?, ?)
+    """, (shop_id, user_id, item_id, qty, item["unit_price"], -total))
+
+    cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
+    new_stock = cursor.fetchone()["current_stock"]
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "new_stock": new_stock})
+
+
+@app.route("/api/stocktake/update-count", methods=["POST"])
+@admin_required
+def update_stock_count():
+    data = request.get_json() or {}
+    item_id = int(data.get("item_id", 0))
+    counted_qty = int(data.get("counted_quantity", 0))
+    shop_id = session["shop_id"]
+    user_id = session["user_id"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE items SET current_stock = ? WHERE item_id = ? AND shop_id = ?", (counted_qty, item_id, shop_id))
+    
+    cursor.execute("""
+        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+        VALUES (?, ?, ?, 'ADJUSTMENT', 'N/A', ?, 0, 0)
+    """, (shop_id, user_id, item_id, counted_qty))
+
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "new_stock": counted_qty})
+
+
+@app.route("/api/restock", methods=["POST"])
+@admin_required
+def api_restock():
+    data = request.get_json() or {}
+    item_id = int(data.get("item_id", 0))
+    qty = int(data.get("quantity", 0))
+    shop_id = session["shop_id"]
+    user_id = session["user_id"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND shop_id = ?", (item_id, shop_id))
+    item = cursor.fetchone()
+
+    cursor.execute("UPDATE items SET current_stock = current_stock + ? WHERE item_id = ?", (qty, item_id))
+
+    cursor.execute("""
+        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+        VALUES (?, ?, ?, 'IN', 'N/A', ?, ?, ?)
+    """, (shop_id, user_id, item_id, qty, item["unit_price"], qty * item["unit_price"]))
+
+    cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
+    new_stock = cursor.fetchone()["current_stock"]
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "new_stock": new_stock})
+
+
+@app.route("/api/items/add", methods=["POST"])
+@admin_required
+def add_new_item():
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    price = float(data.get("unit_price", 0))
+    stock = int(data.get("initial_stock", 0))
+    shop_id = session["shop_id"]
+    user_id = session["user_id"]
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO items (shop_id, name, unit_price, current_stock, is_active)
+        VALUES (?, ?, ?, ?, 1)
+    """, (shop_id, name, price, stock))
+    item_id = cursor.lastrowid
+
+    if stock > 0:
+        cursor.execute("""
+            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+            VALUES (?, ?, ?, 'IN', 'N/A', ?, ?, ?)
+        """, (shop_id, user_id, item_id, stock, price, stock * price))
+
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/reports", methods=["GET"])
+@admin_required
+def get_reports():
+    shop_id = session["shop_id"]
+    range_type = request.args.get("range", "today")
+
+    if range_type == "today":
+        date_filter = "DATE(t.timestamp, 'localtime') = DATE('now', 'localtime')"
+    elif range_type == "yesterday":
+        date_filter = "DATE(t.timestamp, 'localtime') = DATE('now', 'localtime', '-1 day')"
+    elif range_type == "week":
+        date_filter = "DATE(t.timestamp, 'localtime') >= DATE('now', 'localtime', '-7 days')"
+    elif range_type == "month":
+        date_filter = "DATE(t.timestamp, 'localtime') >= DATE('now', 'localtime', '-30 days')"
+    else:
+        date_filter = "1=1"
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Overall Summary
+    cursor.execute(f"""
+        SELECT 
+            COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS total_units_sold,
+            COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS total_sales_val,
+            COALESCE(SUM(CASE WHEN payment_method = 'CASH' AND movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS cash_val,
+            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' AND movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS mpesa_val
+        FROM transactions t
+        WHERE shop_id = ? AND {date_filter};
+    """, (shop_id,))
+    totals = cursor.fetchone()
+
+    # Staff Breakdown
+    cursor.execute(f"""
+        SELECT 
+            u.username,
+            u.role,
+            COUNT(t.transaction_id) AS tx_count,
+            COALESCE(SUM(CASE WHEN t.payment_method = 'CASH' THEN t.total_amount ELSE 0 END), 0) AS cash_amount,
+            COALESCE(SUM(CASE WHEN t.payment_method = 'MPESA' THEN t.total_amount ELSE 0 END), 0) AS mpesa_amount,
+            COALESCE(SUM(t.total_amount), 0) AS total_amount
+        FROM transactions t
+        JOIN users u ON t.user_id = u.user_id
+        WHERE t.shop_id = ? AND t.movement_type = 'OUT' AND {date_filter}
+        GROUP BY u.user_id
+        ORDER BY total_amount DESC;
+    """, (shop_id,))
+    staff_summary = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    return jsonify({
+        "summary": {
+            "total_revenue": totals["total_sales_val"],
+            "total_units": totals["total_units_sold"],
+            "cash": totals["cash_val"],
+            "mpesa": totals["mpesa_val"]
+        },
+        "staff": staff_summary
+    })
 
 
 @app.route("/manifest.json")
@@ -1188,481 +1443,6 @@ def manifest():
 @app.route("/sw.js")
 def service_worker():
     return send_from_directory("static", "sw.js", mimetype="application/javascript")
-
-
-@app.route("/")
-def index():
-    init_db()
-    conn = get_db()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM view_current_stock ORDER BY name ASC;")
-    items = cursor.fetchall()
-
-    cursor.execute("""
-        SELECT 
-            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
-            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
-        FROM transactions
-        WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime');
-    """)
-    totals = cursor.fetchone()
-    conn.close()
-
-    return render_template_string(
-        HTML_TEMPLATE,
-        items=items,
-        today_cash=totals["cash_total"],
-        today_mpesa=totals["mpesa_total"]
-    )
-
-
-@app.route("/api/sale", methods=["POST"])
-def api_sale():
-    init_db()
-    data = request.get_json() or {}
-    item_id = int(data.get("item_id", 0))
-    qty = int(data.get("quantity", 1))
-    payment = data.get("payment_method", "CASH")
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT name, unit_price, current_stock, reorder_level FROM view_current_stock WHERE item_id = ?", (item_id,))
-    item = cursor.fetchone()
-
-    if not item:
-        conn.close()
-        return jsonify({"error": "Item not found"}), 404
-
-    total = qty * item["unit_price"]
-    cursor.execute("""
-        INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-        VALUES (?, 'OUT', ?, ?, ?, ?)
-    """, (item_id, payment, qty, item["unit_price"], total))
-
-    cursor.execute("SELECT current_stock FROM view_current_stock WHERE item_id = ?", (item_id,))
-    new_stock = cursor.fetchone()["current_stock"]
-
-    cursor.execute("""
-        SELECT 
-            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
-            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
-        FROM transactions
-        WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime');
-    """)
-    totals = cursor.fetchone()
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "success": True,
-        "item_name": item["name"],
-        "total": total,
-        "new_stock": new_stock,
-        "reorder_level": item["reorder_level"],
-        "today_cash": totals["cash_total"],
-        "today_mpesa": totals["mpesa_total"]
-    })
-
-
-@app.route("/api/sale/split", methods=["POST"])
-def api_sale_split():
-    init_db()
-    data = request.get_json() or {}
-    item_id = int(data.get("item_id", 0))
-    qty = int(data.get("quantity", 1))
-    cash_amount = float(data.get("cash_amount", 0.0))
-    mpesa_amount = float(data.get("mpesa_amount", 0.0))
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT name, unit_price, current_stock, reorder_level FROM view_current_stock WHERE item_id = ?", (item_id,))
-    item = cursor.fetchone()
-
-    if not item:
-        conn.close()
-        return jsonify({"error": "Item not found"}), 404
-
-    expected_total = qty * item["unit_price"]
-    if round(cash_amount + mpesa_amount, 2) != round(expected_total, 2):
-        conn.close()
-        return jsonify({"error": f"Sum must equal KES {expected_total}"}), 400
-
-    cursor.execute("""
-        INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-        VALUES (?, 'OUT', 'CASH', ?, ?, ?)
-    """, (item_id, qty, item["unit_price"], cash_amount))
-
-    cursor.execute("""
-        INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-        VALUES (?, 'OUT', 'MPESA', 0, ?, ?)
-    """, (item_id, item["unit_price"], mpesa_amount))
-
-    cursor.execute("SELECT current_stock FROM view_current_stock WHERE item_id = ?", (item_id,))
-    new_stock = cursor.fetchone()["current_stock"]
-
-    cursor.execute("""
-        SELECT 
-            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
-            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
-        FROM transactions
-        WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime');
-    """)
-    totals = cursor.fetchone()
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "success": True,
-        "item_name": item["name"],
-        "new_stock": new_stock,
-        "reorder_level": item["reorder_level"],
-        "today_cash": totals["cash_total"],
-        "today_mpesa": totals["mpesa_total"]
-    })
-
-
-@app.route("/api/sale/reverse", methods=["POST"])
-def api_sale_reverse():
-    init_db()
-    data = request.get_json() or {}
-    item_id = int(data.get("item_id", 0))
-    qty = int(data.get("quantity", 1))
-    payment = data.get("payment_method", "CASH")
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT name, unit_price, current_stock, reorder_level FROM view_current_stock WHERE item_id = ?", (item_id,))
-    item = cursor.fetchone()
-
-    if not item:
-        conn.close()
-        return jsonify({"error": "Item not found"}), 404
-
-    total = qty * item["unit_price"]
-    cursor.execute("""
-        INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-        VALUES (?, 'IN', ?, ?, ?, ?)
-    """, (item_id, payment, qty, item["unit_price"], -total))
-
-    cursor.execute("SELECT current_stock FROM view_current_stock WHERE item_id = ?", (item_id,))
-    new_stock = cursor.fetchone()["current_stock"]
-
-    cursor.execute("""
-        SELECT 
-            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
-            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
-        FROM transactions
-        WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime');
-    """)
-    totals = cursor.fetchone()
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "success": True,
-        "item_name": item["name"],
-        "new_stock": new_stock,
-        "reorder_level": item["reorder_level"],
-        "today_cash": totals["cash_total"],
-        "today_mpesa": totals["mpesa_total"]
-    })
-
-
-@app.route("/api/restock", methods=["POST"])
-def api_restock():
-    init_db()
-    data = request.get_json() or {}
-    item_id = int(data.get("item_id", 0))
-    qty = int(data.get("quantity", 0))
-
-    if qty <= 0:
-        return jsonify({"error": "Restock quantity must be positive"}), 400
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT name, unit_price, current_stock, reorder_level FROM view_current_stock WHERE item_id = ?", (item_id,))
-    item = cursor.fetchone()
-
-    if not item:
-        conn.close()
-        return jsonify({"error": "Item not found"}), 404
-
-    if item["current_stock"] < 0:
-        deficit = abs(item["current_stock"])
-        cursor.execute("""
-            INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-            VALUES (?, 'ADJUSTMENT', 'N/A', ?, ?, 0.0)
-        """, (item_id, deficit, item["unit_price"]))
-
-    total = qty * item["unit_price"]
-    cursor.execute("""
-        INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-        VALUES (?, 'IN', 'N/A', ?, ?, ?)
-    """, (item_id, qty, item["unit_price"], total))
-
-    cursor.execute("SELECT current_stock FROM view_current_stock WHERE item_id = ?", (item_id,))
-    new_stock = cursor.fetchone()["current_stock"]
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "success": True,
-        "item_name": item["name"],
-        "new_stock": new_stock,
-        "reorder_level": item["reorder_level"]
-    })
-
-
-@app.route("/api/items/add", methods=["POST"])
-def add_new_item():
-    init_db()
-    data = request.get_json() or {}
-    name = (data.get("name") or "").strip()
-    try:
-        unit_price = float(data.get("unit_price", 0))
-        initial_stock = int(data.get("initial_stock", 0))
-        reorder_level = int(data.get("reorder_level", 5))
-    except (ValueError, TypeError):
-        return jsonify({"error": "Invalid numbers provided"}), 400
-
-    if not name:
-        return jsonify({"error": "Item name cannot be empty"}), 400
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    try:
-        cursor.execute("""
-            INSERT INTO items (name, unit_price, reorder_level, is_active)
-            VALUES (?, ?, ?, 1)
-        """, (name, unit_price, reorder_level))
-        item_id = cursor.lastrowid
-
-        if initial_stock > 0:
-            cursor.execute("""
-                INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-                VALUES (?, 'IN', 'N/A', ?, ?, ?)
-            """, (item_id, initial_stock, unit_price, initial_stock * unit_price))
-
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.close()
-        return jsonify({"error": f"An item named '{name}' already exists"}), 400
-
-    conn.close()
-    return jsonify({
-        "success": True,
-        "item_id": item_id,
-        "name": name,
-        "unit_price": unit_price,
-        "current_stock": initial_stock
-    })
-
-
-@app.route("/api/items/archive/<int:item_id>", methods=["POST"])
-def archive_product(item_id):
-    init_db()
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("UPDATE items SET is_active = 0 WHERE item_id = ?", (item_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": "Product archived from active view."})
-
-
-@app.route("/api/items/import-csv", methods=["POST"])
-def import_csv_catalog():
-    init_db()
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-    file = request.files["file"]
-    
-    stream = io.StringIO(file.stream.read().decode("utf-8-sig"), newline=None)
-    reader = csv.DictReader(stream)
-
-    conn = get_db()
-    cursor = conn.cursor()
-    imported_count = 0
-
-    for row in reader:
-        row_clean = {k.strip().lower(): v for k, v in row.items() if k}
-        name = row_clean.get("name", "").strip()
-        try:
-            price = float(row_clean.get("unit_price", 0.0))
-            stock = int(row_clean.get("initial_stock", 0))
-        except (ValueError, TypeError):
-            continue
-
-        if not name:
-            continue
-
-        try:
-            cursor.execute("INSERT INTO items (name, unit_price, is_active) VALUES (?, ?, 1)", (name, price))
-            new_id = cursor.lastrowid
-            if stock > 0:
-                cursor.execute("""
-                    INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-                    VALUES (?, 'IN', 'N/A', ?, ?, ?)
-                """, (new_id, stock, price, stock * price))
-            imported_count += 1
-        except sqlite3.IntegrityError:
-            pass
-
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "imported_count": imported_count})
-
-
-@app.route("/api/stocktake/reset-all-zero", methods=["POST"])
-def reset_all_zero():
-    init_db()
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT item_id, current_stock, unit_price FROM view_current_stock WHERE current_stock != 0;")
-    rows = cursor.fetchall()
-
-    for r in rows:
-        diff = -r["current_stock"]
-        cursor.execute("""
-            INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-            VALUES (?, 'ADJUSTMENT', 'N/A', ?, ?, 0.0)
-        """, (r["item_id"], diff, r["unit_price"]))
-
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": "All item stocks set to 0"})
-
-
-@app.route("/api/stocktake/update-count", methods=["POST"])
-def update_stock_count():
-    init_db()
-    data = request.get_json() or {}
-    item_id = int(data.get("item_id", 0))
-    counted_qty = int(data.get("counted_quantity", 0))
-
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT current_stock, unit_price, name FROM view_current_stock WHERE item_id = ?", (item_id,))
-    item = cursor.fetchone()
-
-    if not item:
-        conn.close()
-        return jsonify({"error": "Item not found"}), 404
-
-    diff = counted_qty - item["current_stock"]
-    if diff != 0:
-        cursor.execute("""
-            INSERT INTO transactions (item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-            VALUES (?, 'ADJUSTMENT', 'N/A', ?, ?, 0.0)
-        """, (item_id, diff, item["unit_price"]))
-        conn.commit()
-
-    conn.close()
-    return jsonify({"success": True, "item_name": item["name"], "new_stock": counted_qty})
-
-
-@app.route("/api/admin/clear-all-transactions", methods=["POST"])
-def clear_all_transactions():
-    init_db()
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM transactions;")
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "message": "Sales ledger memory cleared successfully"})
-
-
-@app.route("/api/reports", methods=["GET"])
-def get_reports():
-    init_db()
-    range_type = request.args.get("range", "today")
-    start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
-
-    if range_type == "today":
-        date_filter = "DATE(t.timestamp, 'localtime') = DATE('now', 'localtime')"
-        params = ()
-    elif range_type == "week":
-        date_filter = "DATE(t.timestamp, 'localtime') >= DATE('now', 'localtime', '-7 days')"
-        params = ()
-    elif range_type == "month":
-        date_filter = "DATE(t.timestamp, 'localtime') >= DATE('now', 'localtime', '-30 days')"
-        params = ()
-    elif range_type == "custom" and start_date and end_date:
-        date_filter = "DATE(t.timestamp, 'localtime') BETWEEN DATE(?) AND DATE(?)"
-        params = (start_date, end_date)
-    else:
-        date_filter = "1=1"
-        params = ()
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    cursor.execute(f"""
-        SELECT 
-            i.item_id,
-            i.name,
-            i.unit_price,
-            COALESCE(SUM(CASE WHEN t.movement_type = 'OUT' THEN t.quantity ELSE 0 END), 0) AS total_units_sold,
-            COALESCE(SUM(t.total_amount), 0) AS total_sales_val,
-            COALESCE(SUM(CASE WHEN t.payment_method = 'CASH' THEN t.total_amount ELSE 0 END), 0) AS cash_val,
-            COALESCE(SUM(CASE WHEN t.payment_method = 'MPESA' THEN t.total_amount ELSE 0 END), 0) AS mpesa_val
-        FROM items i
-        JOIN transactions t ON i.item_id = t.item_id
-        WHERE {date_filter}
-        GROUP BY i.item_id
-        HAVING total_units_sold > 0
-    """, params)
-    sales = [dict(row) for row in cursor.fetchall()]
-
-    if not sales:
-        conn.close()
-        return jsonify({
-            "summary": {"total_revenue": 0, "total_units": 0, "cash": 0, "mpesa": 0},
-            "top_qty": [], "lowest_qty": [], "top_revenue": [], "high_qty_low_rev": []
-        })
-
-    total_rev = sum(s["total_sales_val"] for s in sales)
-    total_qty = sum(s["total_units_sold"] for s in sales)
-    cash_rev = sum(s["cash_val"] for s in sales)
-    mpesa_rev = sum(s["mpesa_val"] for s in sales)
-
-    sorted_by_qty = sorted(sales, key=lambda x: x["total_units_sold"], reverse=True)
-    top_qty = sorted_by_qty[:10]
-    lowest_qty = sorted_by_qty[-10:][::-1]
-
-    sorted_by_rev = sorted(sales, key=lambda x: x["total_sales_val"], reverse=True)
-    top_rev = sorted_by_rev[:10]
-
-    avg_item_price = (total_rev / total_qty) if total_qty > 0 else 0
-    divergence = [
-        s for s in sales 
-        if s["total_units_sold"] >= 3 and s["unit_price"] <= (avg_item_price * 0.5)
-    ]
-    high_qty_low_rev = sorted(divergence, key=lambda x: x["total_units_sold"], reverse=True)[:10]
-
-    conn.close()
-    return jsonify({
-        "summary": {
-            "total_revenue": total_rev,
-            "total_units": total_qty,
-            "cash": cash_rev,
-            "mpesa": mpesa_rev
-        },
-        "top_qty": top_qty,
-        "lowest_qty": lowest_qty,
-        "top_revenue": top_rev,
-        "high_qty_low_rev": high_qty_low_rev
-    })
 
 
 if __name__ == "__main__":
