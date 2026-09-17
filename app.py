@@ -13,7 +13,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "kiosk_pos_enterprise_multitenant_key_2026")
 
-# Session expires when browser exits (permanent = False)
 app.config.update(
     SESSION_COOKIE_SECURE=False,
     SESSION_COOKIE_HTTPONLY=True,
@@ -87,7 +86,6 @@ def init_db():
         );
     """)
 
-    # Live Database Migrations
     cursor.execute("PRAGMA table_info(shops);")
     shop_cols = [row["name"] for row in cursor.fetchall()]
     if "store_logo" not in shop_cols:
@@ -171,23 +169,23 @@ HTML_TEMPLATE = """
 </head>
 <body class="bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen font-sans antialiased transition-colors duration-200 overflow-x-hidden">
 
-    <nav class="sticky top-0 z-40 backdrop-blur-xl bg-white/90 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 px-4 py-3 shadow-sm">
-        <div class="max-w-3xl mx-auto flex items-center justify-between">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-2xl bg-emerald-100 dark:bg-emerald-950/80 border-2 border-emerald-300 dark:border-emerald-800 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-black text-base overflow-hidden shadow-sm">
+    <nav class="sticky top-0 z-40 backdrop-blur-xl bg-white/90 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 px-3 py-2.5 shadow-sm">
+        <div class="max-w-3xl mx-auto flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2.5 min-w-0">
+                <div class="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 border-2 border-emerald-300 dark:border-emerald-800 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-black text-sm overflow-hidden shadow-sm shrink-0">
                     <span id="navAvatarInitials">{{ session.get('shop_name', 'K')[0]|upper }}</span>
                     <img id="navAvatarImage" src="" alt="Logo" class="w-full h-full object-cover hidden">
                 </div>
-                <div>
-                    <h1 class="text-base font-extrabold tracking-tight text-slate-900 dark:text-white leading-tight">{{ session.get('shop_name', 'Kiosk Track') }}</h1>
-                    <span class="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> @{{ session.get('username') }}
+                <div class="min-w-0">
+                    <h1 class="text-sm font-extrabold tracking-tight text-slate-900 dark:text-white truncate leading-tight">{{ session.get('shop_name', 'Kiosk Track') }}</h1>
+                    <span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 truncate">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0"></span> @{{ session.get('username') }}
                     </span>
                 </div>
             </div>
 
-            <div class="flex items-center gap-1.5 sm:gap-2">
-                <select id="langSelect" onchange="changeLanguage(this.value)" class="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold px-2 py-2 rounded-xl border border-slate-200 dark:border-slate-700 focus:outline-none hover:bg-slate-200 transition">
+            <div class="flex items-center gap-1.5 shrink-0">
+                <select id="langSelect" onchange="changeLanguage(this.value)" class="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px] font-bold px-1.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 focus:outline-none">
                     <option value="en">🇬🇧 EN</option>
                     <option value="sw">🇰🇪 SW</option>
                     <option value="fr">🇫🇷 FR</option>
@@ -196,14 +194,14 @@ HTML_TEMPLATE = """
                     <option value="zh">🇨🇳 ZH</option>
                 </select>
 
-                <button onclick="toggleTheme()" class="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:scale-105 active:scale-95 hover:bg-slate-200 transition shadow-sm">
+                <button onclick="toggleTheme()" class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:scale-105 active:scale-95 transition shadow-sm">
                     <span id="themeIcon">🌙</span>
                 </button>
                 {% if session.get('role') == 'admin' %}
-                <button onclick="openStaffModal()" title="Manage Staff" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold px-3 py-2 rounded-xl transition shadow-sm flex items-center gap-1 hover:scale-105 active:scale-95">
+                <button onclick="openStaffModal()" title="Manage Staff" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-800 dark:text-slate-200 text-[11px] font-bold px-2.5 py-1.5 rounded-xl transition shadow-sm flex items-center gap-1">
                     <span>👥</span> <span data-i18n="staff">Staff</span>
                 </button>
-                <button onclick="openAddItemModal()" class="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold px-3 py-2 rounded-xl shadow transition flex items-center gap-1 hover:scale-105">
+                <button onclick="openAddItemModal()" class="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-[11px] font-bold px-2.5 py-1.5 rounded-xl shadow transition flex items-center gap-1">
                     <span>+</span> <span data-i18n="item">Item</span>
                 </button>
                 {% endif %}
@@ -213,57 +211,57 @@ HTML_TEMPLATE = """
 
     <div id="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 opacity-0 pointer-events-none transform -translate-y-2 max-w-sm w-11/12"></div>
 
-    <main class="max-w-3xl mx-auto px-3 sm:px-4 pt-4 pb-28">
+    <main class="max-w-3xl mx-auto px-3 sm:px-4 pt-3 pb-28">
 
         <section id="screen-counter" class="tab-screen">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 mb-4 shadow-sm flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 mb-3 shadow-sm flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div class="flex items-center gap-2">
                     <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider" data-i18n="entry_date">📅 Entry Date:</span>
                     <input type="date" id="activeSaleDate" value="{{ today_date }}" onchange="onSaleDateChange()" 
-                           class="bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-900 dark:text-white">
+                           class="bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1 text-xs font-bold text-slate-900 dark:text-white">
                 </div>
                 <div id="dateNotice" class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
                     <span>🟢</span> <span data-i18n="live_mode">Live Mode (Deducts Stock)</span>
                 </div>
             </div>
 
-            <div class="grid grid-cols-3 gap-2.5 mb-4">
-                <div onclick="openDrilldown('CASH')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02] active:scale-95">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1" data-i18n="cash">💵 Cash</span>
-                    <div class="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400" id="statCash">KES {{ "{:,.0f}".format(today_cash) }}</div>
+            <div class="grid grid-cols-3 gap-2 mb-3">
+                <div onclick="openDrilldown('CASH')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02] active:scale-95">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5" data-i18n="cash">💵 Cash</span>
+                    <div class="text-sm sm:text-base font-black text-emerald-600 dark:text-emerald-400 truncate" id="statCash">KES {{ "{:,.0f}".format(today_cash) }}</div>
                 </div>
-                <div onclick="openDrilldown('MPESA')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm cursor-pointer hover:border-green-500 transition hover:scale-[1.02] active:scale-95">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1" data-i18n="mpesa">📲 M-Pesa</span>
-                    <div class="text-base sm:text-lg font-black text-green-600 dark:text-green-400" id="statMpesa">KES {{ "{:,.0f}".format(today_mpesa) }}</div>
+                <div onclick="openDrilldown('MPESA')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-green-500 transition hover:scale-[1.02] active:scale-95">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5" data-i18n="mpesa">📲 M-Pesa</span>
+                    <div class="text-sm sm:text-base font-black text-green-600 dark:text-green-400 truncate" id="statMpesa">KES {{ "{:,.0f}".format(today_mpesa) }}</div>
                 </div>
-                <div onclick="openDrilldown('TOTAL')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm cursor-pointer hover:border-indigo-500 transition hover:scale-[1.02] active:scale-95">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1" data-i18n="total_sales">📊 Total Sales</span>
-                    <div class="text-base sm:text-lg font-black text-slate-900 dark:text-white" id="statTotal">KES {{ "{:,.0f}".format(today_cash + today_mpesa) }}</div>
+                <div onclick="openDrilldown('TOTAL')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-indigo-500 transition hover:scale-[1.02] active:scale-95">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5" data-i18n="total_sales">📊 Total Sales</span>
+                    <div class="text-sm sm:text-base font-black text-slate-900 dark:text-white truncate" id="statTotal">KES {{ "{:,.0f}".format(today_cash + today_mpesa) }}</div>
                 </div>
             </div>
 
-            <div class="sticky top-[69px] z-30 mb-4">
+            <div class="sticky top-[61px] z-30 mb-3">
                 <div class="relative shadow-sm rounded-2xl">
                     <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                     </div>
                     <input type="text" id="counterSearch" oninput="filterList('counterSearch', '.counter-card')" placeholder="Search items..." 
                            data-i18n-placeholder="search_placeholder"
-                           class="w-full pl-11 pr-10 py-3 bg-white dark:bg-slate-900 backdrop-blur-md border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium shadow-sm">
+                           class="w-full pl-11 pr-10 py-2.5 bg-white dark:bg-slate-900 backdrop-blur-md border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium shadow-sm">
                 </div>
             </div>
 
             <div class="space-y-2.5" id="counterList">
                 {% for item in items %}
-                <div class="counter-card bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 hover:border-slate-300 dark:hover:border-slate-700 transition relative shadow-sm" 
+                <div class="counter-card bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 hover:border-slate-300 dark:hover:border-slate-700 transition relative shadow-sm" 
                      id="item-card-{{ item['item_id'] }}" data-name="{{ item['name'] }}">
                     <div class="flex items-start justify-between gap-2 mb-2">
                         <div>
-                            <h2 class="font-bold text-slate-900 dark:text-white text-sm sm:text-base leading-snug">{{ item['name'] }}</h2>
+                            <h2 class="font-bold text-slate-900 dark:text-white text-sm leading-snug">{{ item['name'] }}</h2>
                             <span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">KES {{ "{:,.1f}".format(item['unit_price']) }}</span>
                         </div>
                         <div class="flex items-center gap-1.5">
-                            <span id="badge-{{ item['item_id'] }}" class="px-2.5 py-1 rounded-full text-xs font-bold {% if item['current_stock'] <= 0 %}bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-800{% elif item['current_stock'] <= item['reorder_level'] %}bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800{% else %}bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700{% endif %}">
+                            <span id="badge-{{ item['item_id'] }}" class="px-2.5 py-0.5 rounded-full text-[11px] font-bold {% if item['current_stock'] <= 0 %}bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-800{% elif item['current_stock'] <= item['reorder_level'] %}bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800{% else %}bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700{% endif %}">
                                 Stock: <span id="stock-val-{{ item['item_id'] }}">{{ item['current_stock'] }}</span>
                             </span>
                         </div>
@@ -272,10 +270,10 @@ HTML_TEMPLATE = """
                     <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
                         <div class="flex items-center gap-1.5">
                             <div class="flex items-center bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-1">
-                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', -1)" class="w-6 h-7 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">-</button>
+                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', -1)" class="w-6 h-6 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">-</button>
                                 <input type="number" id="qty-{{ item['item_id'] }}" value="1" min="1" 
                                        class="w-8 bg-transparent text-center text-xs font-bold text-slate-900 dark:text-white focus:outline-none">
-                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', 1)" class="w-6 h-7 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">+</button>
+                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', 1)" class="w-6 h-6 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">+</button>
                             </div>
 
                             <button onclick="makeSale({{ item['item_id'] }}, 'CASH')" 
@@ -463,6 +461,24 @@ HTML_TEMPLATE = """
                 <input type="file" id="avatarInput" accept="image/*" class="hidden" onchange="handleAvatarUpload(event)">
 
                 <div class="space-y-4 text-xs">
+                    <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                        <div class="font-bold text-slate-900 dark:text-white flex items-center gap-1.5 uppercase text-[10px] tracking-wider text-slate-400">
+                            <span>⚙️</span> <span data-i18n="settings_header">App Settings & Preferences</span>
+                        </div>
+                        
+                        <div class="flex items-center justify-between py-1.5 border-b border-slate-200 dark:border-slate-800">
+                            <span class="font-semibold text-slate-700 dark:text-slate-300" data-i18n="theme_pref">Theme Mode</span>
+                            <button onclick="toggleTheme()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1">
+                                <span id="themeToggleLabel">Toggle Light/Dark</span>
+                            </button>
+                        </div>
+
+                        <div class="flex items-center justify-between py-1">
+                            <span class="font-semibold text-slate-700 dark:text-slate-300" data-i18n="app_version">App Version</span>
+                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v2.8</span>
+                        </div>
+                    </div>
+
                     <button onclick="triggerNativeInstall()" class="w-full bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold py-3 px-4 rounded-xl transition flex items-center justify-center gap-2 shadow-md hover:scale-[1.01]">
                         <span>📲</span> <span data-i18n="install_app_btn">Install App on Phone</span>
                     </button>
@@ -476,7 +492,7 @@ HTML_TEMPLATE = """
                         <div class="flex items-center gap-2">
                             <input type="text" id="storeLinkInput" readonly value="https://kiosktrack.pythonanywhere.com" 
                                    class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-700 dark:text-slate-300 font-mono text-xs focus:outline-none">
-                            <button onclick="copyStoreLink()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold px-3 py-2 rounded-xl transition shrink-0 flex items-center gap-1 hover:scale-105">
+                            <button onclick="copyStoreLink()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-800 dark:text-slate-200 font-bold px-3 py-2 rounded-xl transition shrink-0 flex items-center gap-1 hover:scale-105">
                                 <span>📋</span> <span data-i18n="btn_copy">Copy</span>
                             </button>
                         </div>
@@ -492,11 +508,6 @@ HTML_TEMPLATE = """
                         <span class="text-[11px] font-bold text-slate-500" data-i18n="store_logo">Store Logo / Picture</span>
                         <button onclick="removeAvatar()" class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 text-rose-600 font-bold px-3 py-1.5 rounded-lg transition border border-rose-200 dark:border-rose-800 hover:scale-105" data-i18n="btn_remove">Remove Logo</button>
                     </div>
-
-                    <div class="flex items-center justify-between py-1 text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-3">
-                        <span data-i18n="app_version">App Version</span>
-                        <span class="font-mono font-bold text-slate-600 dark:text-slate-300">v2.8</span>
-                    </div>
                 </div>
 
                 <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-4">
@@ -504,9 +515,9 @@ HTML_TEMPLATE = """
                         <span data-i18n="btn_logout">Log out</span>
                     </a>
 
-                    <div class="text-center pt-2">
+                    <div class="text-center pt-2 space-y-0.5">
                         <p class="text-[10px] text-slate-400 font-semibold">© 2026 Kiosk Track. All rights reserved.</p>
-                        <p class="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold mt-0.5">Empowering Businesses WorldWide.</p>
+                        <p class="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold" data-i18n="footer_empower">Empowering Businesses WorldWide.</p>
                     </div>
                 </div>
 
@@ -731,12 +742,12 @@ HTML_TEMPLATE = """
         let deferredPrompt = null;
 
         const translations = {
-            en: { staff: "Staff", item: "Item", entry_date: "📅 Entry Date:", live_mode: "Live Mode (Deducts Stock)", cash: "💵 Cash", mpesa: "📲 M-Pesa", total_sales: "📊 Total Sales", search_placeholder: "Search items...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Split", btn_return: "Return", btn_in: "+ In", reports_title: "Sales & Staff Shifts", reports_subtitle: "Historical performance and staff handovers", today: "Today", yesterday: "Yesterday", week: "7 Days", month: "30 Days", revenue: "Revenue", units_sold: "Units Sold", raw_export: "📥 Flexible Range CSV Export:", csv_year: "Last Year CSV", csv_all: "All-Time CSV", staff_breakdown: "Staff Shift Breakdown", th_staff: "Staff", th_role: "Role", th_sales: "Sales", th_cash: "Cash", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Physical Stock Calibration", stock_subtitle: "Setting counts here overrides your shelf total directly", current_count: "Current Count", btn_set: "Set", store_logo: "Store Logo / Picture", btn_upload: "Upload", btn_remove: "Remove Logo", share_store: "Share Store Link", share_desc: "Copy your store link or share instantly with customers and friends via WhatsApp.", btn_copy: "Copy", btn_whatsapp: "Share via WhatsApp", app_version: "App Version", btn_close: "Close", btn_logout: "Log out", manage_cashiers: "Manage Cashiers", current_team: "Current Team", create_cashier: "Create New Cashier", username: "Username", password_pin: "Password / PIN", btn_create: "Create Cashier", add_product: "Add New Product", product_name: "Product Name", selling_price: "Selling Price (KES)", initial_stock: "Initial Stock", btn_cancel: "Cancel", btn_save: "Save", cash_kes: "Cash (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Complete Sale", nav_counter: "Counter", nav_reports: "Reports", nav_stocktake: "Stock Take", nav_profile: "Profile", install_app_btn: "Install App on Phone", closing_stock_card: "Remaining Closing Stock", closing_stock_sub: "Click to inspect remaining items & valuation", start_date: "Start Date", end_date: "End Date" },
-            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho" },
-            fr: { staff: "Personnel", item: "Article", entry_date: "📅 Date:", live_mode: "Mode en direct", cash: "💵 Espèces", mpesa: "📲 M-Pesa", total_sales: "📊 Ventes Totales", search_placeholder: "Rechercher...", btn_cash: "Espèces", btn_mpesa: "M-Pesa", btn_split: "Diviser", btn_return: "Retour", btn_in: "+ Entrée", reports_title: "Rapports", reports_subtitle: "Performance historique", today: "Aujourd'hui", yesterday: "Hier", week: "7 Jours", month: "30 Jours", revenue: "Revenu", units_sold: "Unités vendues", raw_export: "📥 Exporter Données:", csv_year: "CSV An Dernier", csv_all: "CSV Tout", staff_breakdown: "Détail du Personnel", th_staff: "Personnel", th_role: "Rôle", th_sales: "Ventes", th_cash: "Espèces", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibration Stock", stock_subtitle: "Modifie directement le stock", current_count: "Stock Actuel", btn_set: "Définir", store_logo: "Logo du Magasin", btn_upload: "Télécharger", btn_remove: "Supprimer Logo", share_store: "Partager le lien", share_desc: "Copiez le lien ou partagez avec vos clients via WhatsApp.", btn_copy: "Copier", btn_whatsapp: "Partager via WhatsApp", app_version: "Version", btn_close: "Fermer", btn_logout: "Déconnexion", manage_cashiers: "Gérer Caissiers", current_team: "Équipe", create_cashier: "Créer Caissier", username: "Nom d'utilisateur", password_pin: "Mot de passe", btn_create: "Créer", add_product: "Ajouter Article", product_name: "Nom", selling_price: "Prix (KES)", initial_stock: "Stock Initial", btn_cancel: "Annuler", btn_save: "Enregistrer", cash_kes: "Espèces (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Valider", nav_counter: "Comptoir", nav_reports: "Rapports", nav_stocktake: "Inventaire", nav_profile: "Profil", install_app_btn: "Installer l'application", closing_stock_card: "Stock de Clôture", closing_stock_sub: "Inspecter le stock restant", start_date: "Date Début", end_date: "Date Fin" },
-            es: { staff: "Personal", item: "Artículo", entry_date: "📅 Fecha:", live_mode: "Modo en Vivo", cash: "💵 Efectivo", mpesa: "📲 M-Pesa", total_sales: "📊 Ventas Totales", search_placeholder: "Buscar...", btn_cash: "Efectivo", btn_mpesa: "M-Pesa", btn_split: "Dividir", btn_return: "Devolver", btn_in: "+ Entrar", reports_title: "Reportes", reports_subtitle: "Rendimiento histórico", today: "Hoy", yesterday: "Ayer", week: "7 Días", month: "30 Días", revenue: "Ingresos", units_sold: "Unidades", raw_export: "📥 Exportar Datos:", csv_year: "CSV Año Pasado", csv_all: "CSV Todo", staff_breakdown: "Desglose del Personal", th_staff: "Personal", th_role: "Rol", th_sales: "Ventas", th_cash: "Efectivo", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibración de Stock", stock_subtitle: "Modifica el stock directamente", current_count: "Conteo Actual", btn_set: "Fijar", store_logo: "Logo de Tienda", btn_upload: "Subir", btn_remove: "Eliminar Logo", share_store: "Compartir Enlace", share_desc: "Copia el enlace o compártelo con tus clientes por WhatsApp.", btn_copy: "Copiar", btn_whatsapp: "Compartir por WhatsApp", app_version: "Versión", btn_close: "Cerrar", btn_logout: "Cerrar Sesión", manage_cashiers: "Gestionar Cajeros", current_team: "Equipo", create_cashier: "Crear Cajero", username: "Usuario", password_pin: "Contraseña", btn_create: "Crear", add_product: "Agregar Producto", product_name: "Nombre", selling_price: "Precio (KES)", initial_stock: "Stock Inicial", btn_cancel: "Cancelar", btn_save: "Guardar", cash_kes: "Efectivo (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Completar Venta", nav_counter: "Mostrador", nav_reports: "Reportes", nav_stocktake: "Inventario", nav_profile: "Perfil", install_app_btn: "Instalar Aplicación", closing_stock_card: "Stock Restante", closing_stock_sub: "Ver inventario actual", start_date: "Fecha Inicio", end_date: "Fecha Fin" },
-            ar: { staff: "الموظفين", item: "صنف", entry_date: "📅 تاريخ:", live_mode: "الوضع المباشر", cash: "💵 نقدي", mpesa: "📲 إمبيسا", total_sales: "📊 إجمالي المبيعات", search_placeholder: "بحث عن أصناف...", btn_cash: "نقدي", btn_mpesa: "إمبيسا", btn_split: "تقسيم", btn_return: "إرجاع", btn_in: "+ إدخال", reports_title: "التقارير", reports_subtitle: "الأداء التاريخي", today: "اليوم", yesterday: "أمس", week: "7 أيام", month: "30 يوم", revenue: "الإيرادات", units_sold: "الوحدات المباعة", raw_export: "📥 تصدير البيانات:", csv_year: "CSV العام الماضي", csv_all: "CSV الكل", staff_breakdown: "تفصيل ورديات الموظفين", th_staff: "الموظف", th_role: "الدور", th_sales: "المبيعات", th_cash: "نقدي", th_mpesa: "إمبيسا", th_total: "المجموع", stock_calibration: "مراجعة المخزون", stock_subtitle: "تعديل رصيد الرف مباشرة", current_count: "العدد الحالي", btn_set: "تعيين", store_logo: "شعار المتجر", btn_upload: "رفع", btn_remove: "إزالة الشعار", share_store: "مشاركة رابط المتجر", share_desc: "انسخ الرابط أو شاركه مع العملاء والأصدقاء عبر واتساب.", btn_copy: "نسخ", btn_whatsapp: "مشاركة عبر واتساب", app_version: "إصدار التطبيق", btn_close: "إغلاق", btn_logout: "تسجيل الخروج", manage_cashiers: "إدارة الكاشير", current_team: "الفريق الحالي", create_cashier: "إنشاء كاشير", username: "اسم المستخدم", password_pin: "كلمة المرور / الرمز", btn_create: "إنشاء", add_product: "إضافة منتج", product_name: "اسم المنتج", selling_price: "سعر البيع", initial_stock: "المخزون الأولي", btn_cancel: "إلغاء", btn_save: "حفظ", cash_kes: "نقدي", mpesa_kes: "إمبيسا", btn_complete: "إتمام البيع", nav_counter: "العداد", nav_reports: "التقارير", nav_stocktake: "جرد المخزون", nav_profile: "الملف الشخصي", install_app_btn: "تثبيت التطبيق على الهاتف", closing_stock_card: "المخزون المتبقي", closing_stock_sub: "عرض تقييم المخزون", start_date: "تاريخ البدء", end_date: "تاريخ الانتهاء" },
-            zh: { staff: "员工", item: "商品", entry_date: "📅 日期：", live_mode: "实时模式", cash: "💵 现金", mpesa: "📲 移动支付", total_sales: "📊 总销售额", search_placeholder: "搜索商品...", btn_cash: "现金", btn_mpesa: "移动支付", btn_split: "拆分", btn_return: "退货", btn_in: "+ 入库", reports_title: "销售与班次", reports_subtitle: "历史业绩", today: "今天", yesterday: "昨天", week: "7天", month: "30天", revenue: "收入", units_sold: "销售数量", raw_export: "📥 导出原始数据:", csv_year: "去年CSV", csv_all: "全部CSV", staff_breakdown: "员工班次明细", th_staff: "员工", th_role: "角色", th_sales: "销售", th_cash: "现金", th_mpesa: "移动支付", th_total: "总计", stock_calibration: "库存校准", stock_subtitle: "直接覆盖货架库存", current_count: "当前盘点", btn_set: "设置", store_logo: "店铺标志", btn_upload: "上传", btn_remove: "移除Logo", share_store: "分享店铺链接", share_desc: "复制您的店铺链接，或通过WhatsApp快速分享给客户和好友。", btn_copy: "复制", btn_whatsapp: "通过WhatsApp分享", app_version: "应用版本", btn_close: "关闭", btn_logout: "退出登录", manage_cashiers: "管理收银员", current_team: "当前团队", create_cashier: "新建收银员", username: "用户名", password_pin: "密码/PIN", btn_create: "创建", add_product: "添加新商品", product_name: "商品名称", selling_price: "售价", initial_stock: "初始库存", btn_cancel: "取消", btn_save: "保存", cash_kes: "现金", mpesa_kes: "移动支付", btn_complete: "完成销售", nav_counter: "收银台", nav_reports: "报表", nav_stocktake: "盘点", nav_profile: "个人资料", install_app_btn: "在手机上安装应用", closing_stock_card: "剩余库存", closing_stock_sub: "查看剩余库存及估值", start_date: "开始日期", end_date: "结束日期" }
+            en: { staff: "Staff", item: "Item", entry_date: "📅 Entry Date:", live_mode: "Live Mode (Deducts Stock)", cash: "💵 Cash", mpesa: "📲 M-Pesa", total_sales: "📊 Total Sales", search_placeholder: "Search items...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Split", btn_return: "Return", btn_in: "+ In", reports_title: "Sales & Staff Shifts", reports_subtitle: "Historical performance and staff handovers", today: "Today", yesterday: "Yesterday", week: "7 Days", month: "30 Days", revenue: "Revenue", units_sold: "Units Sold", raw_export: "📥 Flexible Range CSV Export:", csv_year: "Last Year CSV", csv_all: "All-Time CSV", staff_breakdown: "Staff Shift Breakdown", th_staff: "Staff", th_role: "Role", th_sales: "Sales", th_cash: "Cash", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Physical Stock Calibration", stock_subtitle: "Setting counts here overrides your shelf total directly", current_count: "Current Count", btn_set: "Set", store_logo: "Store Logo / Picture", btn_upload: "Upload", btn_remove: "Remove Logo", share_store: "Share Store Link", share_desc: "Copy your store link or share instantly with customers and friends via WhatsApp.", btn_copy: "Copy", btn_whatsapp: "Share via WhatsApp", app_version: "App Version", btn_close: "Close", btn_logout: "Log out", manage_cashiers: "Manage Cashiers", current_team: "Current Team", create_cashier: "Create New Cashier", username: "Username", password_pin: "Password / PIN", btn_create: "Create Cashier", add_product: "Add New Product", product_name: "Product Name", selling_price: "Selling Price (KES)", initial_stock: "Initial Stock", btn_cancel: "Cancel", btn_save: "Save", cash_kes: "Cash (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Complete Sale", nav_counter: "Counter", nav_reports: "Reports", nav_stocktake: "Stock Take", nav_profile: "Profile", install_app_btn: "Install App on Phone", closing_stock_card: "Remaining Closing Stock", closing_stock_sub: "Click to inspect remaining items & valuation", start_date: "Start Date", end_date: "End Date", settings_header: "App Settings & Preferences", theme_pref: "Theme Mode", footer_empower: "Empowering Businesses WorldWide." },
+            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi", footer_empower: "Kuwezesha Biashara Duniani Kote." },
+            fr: { staff: "Personnel", item: "Article", entry_date: "📅 Date:", live_mode: "Mode en direct", cash: "💵 Espèces", mpesa: "📲 M-Pesa", total_sales: "📊 Ventes Totales", search_placeholder: "Rechercher...", btn_cash: "Espèces", btn_mpesa: "M-Pesa", btn_split: "Diviser", btn_return: "Retour", btn_in: "+ Entrée", reports_title: "Rapports", reports_subtitle: "Performance historique", today: "Aujourd'hui", yesterday: "Hier", week: "7 Jours", month: "30 Jours", revenue: "Revenu", units_sold: "Unités vendues", raw_export: "📥 Exporter Données:", csv_year: "CSV An Dernier", csv_all: "CSV Tout", staff_breakdown: "Détail du Personnel", th_staff: "Personnel", th_role: "Rôle", th_sales: "Ventes", th_cash: "Espèces", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibration Stock", stock_subtitle: "Modifie directement le stock", current_count: "Stock Actuel", btn_set: "Définir", store_logo: "Logo du Magasin", btn_upload: "Télécharger", btn_remove: "Supprimer Logo", share_store: "Partager le lien", share_desc: "Copiez le lien ou partagez avec vos clients via WhatsApp.", btn_copy: "Copier", btn_whatsapp: "Partager via WhatsApp", app_version: "Version", btn_close: "Fermer", btn_logout: "Déconnexion", manage_cashiers: "Gérer Caissiers", current_team: "Équipe", create_cashier: "Créer Caissier", username: "Nom d'utilisateur", password_pin: "Mot de passe", btn_create: "Créer", add_product: "Ajouter Article", product_name: "Nom", selling_price: "Prix (KES)", initial_stock: "Stock Initial", btn_cancel: "Annuler", btn_save: "Enregistrer", cash_kes: "Espèces (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Valider", nav_counter: "Comptoir", nav_reports: "Rapports", nav_stocktake: "Inventaire", nav_profile: "Profil", install_app_btn: "Installer l'application", closing_stock_card: "Stock de Clôture", closing_stock_sub: "Inspecter le stock restant", start_date: "Date Début", end_date: "Date Fin", settings_header: "Paramètres de l'application", theme_pref: "Mode Thème", footer_empower: "Autonomiser les entreprises du monde entier." },
+            es: { staff: "Personal", item: "Artículo", entry_date: "📅 Fecha:", live_mode: "Modo en Vivo", cash: "💵 Efectivo", mpesa: "📲 M-Pesa", total_sales: "📊 Ventas Totales", search_placeholder: "Buscar...", btn_cash: "Efectivo", btn_mpesa: "M-Pesa", btn_split: "Dividir", btn_return: "Devolver", btn_in: "+ Entrar", reports_title: "Reportes", reports_subtitle: "Rendimiento histórico", today: "Hoy", yesterday: "Ayer", week: "7 Días", month: "30 Días", revenue: "Ingresos", units_sold: "Unidades", raw_export: "📥 Exportar Datos:", csv_year: "CSV Año Pasado", csv_all: "CSV Todo", staff_breakdown: "Desglose del Personal", th_staff: "Personal", th_role: "Rol", th_sales: "Ventas", th_cash: "Efectivo", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibración de Stock", stock_subtitle: "Modifica el stock directamente", current_count: "Conteo Actual", btn_set: "Fijar", store_logo: "Logo de Tienda", btn_upload: "Subir", btn_remove: "Eliminar Logo", share_store: "Compartir Enlace", share_desc: "Copia el enlace o compártelo con tus clientes por WhatsApp.", btn_copy: "Copiar", btn_whatsapp: "Compartir por WhatsApp", app_version: "Versión", btn_close: "Cerrar", btn_logout: "Cerrar Sesión", manage_cashiers: "Gestionar Cajeros", current_team: "Equipo", create_cashier: "Crear Cajero", username: "Usuario", password_pin: "Contraseña", btn_create: "Crear", add_product: "Agregar Producto", product_name: "Nombre", selling_price: "Precio (KES)", initial_stock: "Stock Inicial", btn_cancel: "Cancelar", btn_save: "Guardar", cash_kes: "Efectivo (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Completar Venta", nav_counter: "Mostrador", nav_reports: "Reportes", nav_stocktake: "Inventario", nav_profile: "Perfil", install_app_btn: "Instalar Aplicación", closing_stock_card: "Stock Restante", closing_stock_sub: "Ver inventario actual", start_date: "Fecha Inicio", end_date: "Fecha Fin", settings_header: "Configuración de la App", theme_pref: "Modo de Tema", footer_empower: "Empoderando negocios en todo el mundo." },
+            ar: { staff: "الموظفين", item: "صنف", entry_date: "📅 تاريخ:", live_mode: "الوضع المباشر", cash: "💵 نقدي", mpesa: "📲 إمبيسا", total_sales: "📊 إجمالي المبيعات", search_placeholder: "بحث عن أصناف...", btn_cash: "نقدي", btn_mpesa: "إمبيسا", btn_split: "تقسيم", btn_return: "إرجاع", btn_in: "+ إدخال", reports_title: "التقارير", reports_subtitle: "الأداء التاريخي", today: "اليوم", yesterday: "أمس", week: "7 أيام", month: "30 يوم", revenue: "الإيرادات", units_sold: "الوحدات المباعة", raw_export: "📥 تصدير البيانات:", csv_year: "CSV العام الماضي", csv_all: "CSV الكل", staff_breakdown: "تفصيل ورديات الموظفين", th_staff: "الموظف", th_role: "الدور", th_sales: "المبيعات", th_cash: "نقدي", th_mpesa: "إمبيسا", th_total: "المجموع", stock_calibration: "مراجعة المخزون", stock_subtitle: "تعديل رصيد الرف مباشرة", current_count: "العدد الحالي", btn_set: "تعيين", store_logo: "شعار المتجر", btn_upload: "رفع", btn_remove: "إزالة الشعار", share_store: "مشاركة رابط المتجر", share_desc: "انسخ الرابط أو شاركه مع العملاء والأصدقاء عبر واتساب.", btn_copy: "نسخ", btn_whatsapp: "مشاركة عبر واتساب", app_version: "إصدار التطبيق", btn_close: "إغلاق", btn_logout: "تسجيل الخروج", manage_cashiers: "إدارة الكاشير", current_team: "الفريق الحالي", create_cashier: "إنشاء كاشير", username: "اسم المستخدم", password_pin: "كلمة المرور / الرمز", btn_create: "إنشاء", add_product: "إضافة منتج", product_name: "اسم المنتج", selling_price: "سعر البيع", initial_stock: "المخزون الأولي", btn_cancel: "إلغاء", btn_save: "حفظ", cash_kes: "نقدي", mpesa_kes: "إمبيسا", btn_complete: "إتمام البيع", nav_counter: "العداد", nav_reports: "التقارير", nav_stocktake: "جرد المخزون", nav_profile: "الملف الشخصي", install_app_btn: "تثبيت التطبيق على الهاتف", closing_stock_card: "المخزون المتبقي", closing_stock_sub: "عرض تقييم المخزون", start_date: "تاريخ البدء", end_date: "تاريخ الانتهاء", settings_header: "إعدادات التطبيق", theme_pref: "وضع المظهر", footer_empower: "تمكين الشركات في جميع أنحاء العالم." },
+            zh: { staff: "员工", item: "商品", entry_date: "📅 日期：", live_mode: "实时模式", cash: "💵 现金", mpesa: "📲 移动支付", total_sales: "📊 总销售额", search_placeholder: "搜索商品...", btn_cash: "现金", btn_mpesa: "移动支付", btn_split: "拆分", btn_return: "退货", btn_in: "+ 入库", reports_title: "销售与班次", reports_subtitle: "历史业绩", today: "今天", yesterday: "昨天", week: "7天", month: "30天", revenue: "收入", units_sold: "销售数量", raw_export: "📥 导出原始数据:", csv_year: "去年CSV", csv_all: "全部CSV", staff_breakdown: "员工班次明细", th_staff: "员工", th_role: "角色", th_sales: "销售", th_cash: "现金", th_mpesa: "移动支付", th_total: "总计", stock_calibration: "库存校准", stock_subtitle: "直接覆盖货架库存", current_count: "当前盘点", btn_set: "设置", store_logo: "店铺标志", btn_upload: "上传", btn_remove: "移除Logo", share_store: "分享店铺链接", share_desc: "复制您的店铺链接，或通过WhatsApp快速分享给客户和好友。", btn_copy: "复制", btn_whatsapp: "通过WhatsApp分享", app_version: "应用版本", btn_close: "关闭", btn_logout: "退出登录", manage_cashiers: "管理收银员", current_team: "当前团队", create_cashier: "新建收银员", username: "用户名", password_pin: "密码/PIN", btn_create: "创建", add_product: "添加新商品", product_name: "商品名称", selling_price: "售价", initial_stock: "初始库存", btn_cancel: "取消", btn_save: "保存", cash_kes: "现金", mpesa_kes: "移动支付", btn_complete: "完成销售", nav_counter: "收银台", nav_reports: "报表", nav_stocktake: "盘点", nav_profile: "个人资料", install_app_btn: "在手机上安装应用", closing_stock_card: "剩余库存", closing_stock_sub: "查看剩余库存及估值", start_date: "开始日期", end_date: "结束日期", settings_header: "应用设置", theme_pref: "主题模式", footer_empower: "赋能全球企业。" }
         };
 
         function changeLanguage(lang) {
@@ -1018,7 +1029,6 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Drilldown Modal Logic for Cash, M-Pesa, & Total Sales
         let activeDrillMode = 'TOTAL';
         function openDrilldown(mode) {
             activeDrillMode = mode;
@@ -1066,7 +1076,6 @@ HTML_TEMPLATE = """
             window.location.href = url;
         }
 
-        // Units Sold Modal Logic
         async function openUnitsSoldModal() {
             document.getElementById('unitsSoldModal').classList.remove('hidden');
             const res = await fetch('/api/reports/units-sold');
@@ -1086,7 +1095,6 @@ HTML_TEMPLATE = """
         }
         function closeUnitsSoldModal() { document.getElementById('unitsSoldModal').classList.add('hidden'); }
 
-        // Closing Stock Modal Logic
         async function openClosingStockModal() {
             document.getElementById('closingStockModal').classList.remove('hidden');
             const res = await fetch('/api/reports/closing-stock');
@@ -1107,7 +1115,6 @@ HTML_TEMPLATE = """
         function closeClosingStockModal() { document.getElementById('closingStockModal').classList.add('hidden'); }
         function downloadClosingStockCsv() { window.location.href = '/api/reports/closing-stock-csv'; }
 
-        // Range CSV Download
         function downloadRangeCsv() {
             const start = document.getElementById('exportStart').value;
             const end = document.getElementById('exportEnd').value;
@@ -1124,7 +1131,6 @@ HTML_TEMPLATE = """
             const reader = new FileReader();
             reader.onload = async function(e) {
                 const base64String = e.target.result;
-                // Save to server so it syncs across mobile, pc, and other browsers
                 await fetch('/api/store/logo', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1371,7 +1377,7 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
-            session.permanent = False # Clears session when browser closes
+            session.permanent = False
             session["user_id"] = user["user_id"]
             session["shop_id"] = user["shop_id"]
             session["username"] = user["username"]
