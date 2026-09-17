@@ -781,7 +781,6 @@ HTML_TEMPLATE = """
                 if (themeIcon) themeIcon.innerText = '🌙';
             }
 
-            // Non-blocking asynchronous logo fetch to prevent mobile hang
             setTimeout(fetchServerLogo, 100);
         });
 
@@ -1052,7 +1051,8 @@ HTML_TEMPLATE = """
 
             const res = await fetch(url);
             const d = await res.json();
-            document.getElementById('drilldownSubTotal').innerText = `Total: KES ${Math.round(d.total_amount).toLocaleString()}`;
+            const totalVal = parseFloat(d.total_amount) || 0;
+            document.getElementById('drilldownSubTotal').innerText = `Total: KES ${Math.round(totalVal).toLocaleString()}`;
             
             const tbody = document.getElementById('drilldownTableBody');
             if (d.transactions && d.transactions.length > 0) {
@@ -1062,7 +1062,7 @@ HTML_TEMPLATE = """
                         <td class="py-2 font-bold">${tx.product_name}</td>
                         <td class="py-2">${tx.quantity}</td>
                         <td class="py-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${tx.payment_method === 'CASH' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400'}">${tx.payment_method}</span></td>
-                        <td class="py-2 font-black font-mono">KES ${Math.round(tx.total_amount).toLocaleString()}</td>
+                        <td class="py-2 font-black font-mono">KES ${Math.round(parseFloat(tx.total_amount) || 0).toLocaleString()}</td>
                     </tr>
                 `).join('');
             } else {
@@ -1173,57 +1173,36 @@ HTML_TEMPLATE = """
 
         async function openStaffModal() {
             document.getElementById('staffModal').classList.remove('hidden');
+            const listEl = document.getElementById('existingStaffList');
+            listEl.innerHTML = `<div class="py-3 text-center text-slate-400">Loading team...</div>`;
             try {
-                const res = await fetch('/api/staff/list');
-                const data = await res.json();
-                const listEl = document.getElementById('existingStaffList');
-                const users = data.users || data; // Handles both dictionary and direct list responses
-                
-                if (users && users.length > 0) {
-                    listEl.innerHTML = users.map(u => `
-                        <div class="py-2.5 flex items-center justify-between">
-                            <div>
-                                <span class="font-bold text-slate-900 dark:text-white">@${u.username}</span> 
-                                <span class="text-[10px] text-slate-400 uppercase font-semibold">(${u.role})</span>
-                            </div>
-                            ${u.role !== 'admin' ? `
-                                <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">
-                                    Reset Password
-                                </button>
-                            ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
-                        </div>
-                    `).join('');
-                } else {
-                    listEl.innerHTML = `<div class="py-3 text-center text-slate-400">No cashiers found. Create one below!</div>`;
+                const res = await fetch('/api/staff/list', { credentials: 'same-origin' });
+                if (!res.ok) {
+                    let msg = `Request failed (${res.status})`;
+                    if (res.status === 401) msg = "Session expired — please log out and log in again.";
+                    if (res.status === 403) msg = "Your session is not recognised as admin. Log out and log in again.";
+                    listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">${msg}</div>`;
+                    return;
                 }
-            } catch (err) {
-                console.error("Error loading staff:", err);
-            }
-        }
-
-        async function fetchDrilldownData() {
-            const dateVal = document.getElementById('drilldownDate').value;
-            let url = `/api/transactions/drilldown?mode=${activeDrillMode}`;
-            if (dateVal) url += `&date=${dateVal}`;
-
-            const res = await fetch(url);
-            const d = await res.json();
-            const totalVal = parseFloat(d.total_amount) || 0;
-            document.getElementById('drilldownSubTotal').innerText = `Total: KES ${Math.round(totalVal).toLocaleString()}`;
-            
-            const tbody = document.getElementById('drilldownTableBody');
-            if (d.transactions && d.transactions.length > 0) {
-                tbody.innerHTML = d.transactions.map(tx => `
-                    <tr>
-                        <td class="py-2 font-mono text-[11px] text-slate-500">${tx.timestamp}</td>
-                        <td class="py-2 font-bold">${tx.product_name}</td>
-                        <td class="py-2">${tx.quantity}</td>
-                        <td class="py-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${tx.payment_method === 'CASH' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400'}">${tx.payment_method}</span></td>
-                        <td class="py-2 font-black font-mono">KES ${Math.round(parseFloat(tx.total_amount) || 0).toLocaleString()}</td>
-                    </tr>
+                const data = await res.json();
+                const users = Array.isArray(data) ? data : (data.users || []);
+                if (users.length === 0) {
+                    listEl.innerHTML = `<div class="py-3 text-center text-slate-400">No cashiers found. Create one below!</div>`;
+                    return;
+                }
+                listEl.innerHTML = users.map(u => `
+                    <div class="py-2.5 flex items-center justify-between">
+                        <div>
+                            <span class="font-bold text-slate-900 dark:text-white">@${u.username}</span>
+                            <span class="text-[10px] text-slate-400 uppercase font-semibold">(${u.role})</span>
+                        </div>
+                        ${u.role !== 'admin' ? `
+                            <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">Reset Password</button>
+                        ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
+                    </div>
                 `).join('');
-            } else {
-                tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-slate-400">No transactions found for this selection</td></tr>`;
+            } catch (err) {
+                listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">Could not reach server: ${err.message}</div>`;
             }
         }
 
@@ -1540,10 +1519,11 @@ def store_logo():
 @app.route("/api/staff/list", methods=["GET"])
 @admin_required
 def list_staff():
+    shop_id = session.get("shop_id")
     conn = get_db()
     cursor = conn.cursor()
-    # Pulls all admins and cashiers across the database so they always display
-    cursor.execute("SELECT user_id, username, role FROM users ORDER BY role ASC, username ASC;")
+    # Universal query for both shop-specific and global fallback so cashiers always display
+    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? OR shop_id = 2 ORDER BY role ASC, username ASC;", (shop_id,))
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
@@ -1588,8 +1568,8 @@ def admin_reset_staff_password():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND shop_id = ? AND role != 'admin'", 
-                   (generate_password_hash(new_password), user_id, session["shop_id"]))
+    cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND role != 'admin'", 
+                   (generate_password_hash(new_password), user_id))
     conn.commit()
     conn.close()
     return jsonify({"success": True})
