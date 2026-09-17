@@ -1517,13 +1517,13 @@ def store_logo():
 
 
 @app.route("/api/staff/list", methods=["GET"])
-@admin_required
 def list_staff():
-    shop_id = session.get("shop_id")
+    if "user_id" not in session or session.get("role") != "admin":
+        return jsonify({"error": "Unauthorized"}), 401
+    
     conn = get_db()
     cursor = conn.cursor()
-    # Universal query for both shop-specific and global fallback so cashiers always display
-    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? OR shop_id = 2 ORDER BY role ASC, username ASC;", (shop_id,))
+    cursor.execute("SELECT user_id, username, role FROM users ORDER BY role ASC, username ASC;")
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
