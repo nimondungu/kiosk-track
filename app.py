@@ -1540,9 +1540,10 @@ def store_logo():
 @app.route("/api/staff/list", methods=["GET"])
 @admin_required
 def list_staff():
+    shop_id = session.get("shop_id", 2)
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? ORDER BY role ASC, username ASC;", (session["shop_id"],))
+    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? ORDER BY role ASC, username ASC;", (shop_id,))
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
