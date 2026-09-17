@@ -1173,23 +1173,57 @@ HTML_TEMPLATE = """
 
         async function openStaffModal() {
             document.getElementById('staffModal').classList.remove('hidden');
-            const res = await fetch('/api/staff/list');
-            const data = await res.json();
-            const listEl = document.getElementById('existingStaffList');
-            if (data.users && data.users.length > 0) {
-                listEl.innerHTML = data.users.map(u => `
-                    <div class="py-2 flex items-center justify-between">
-                        <div>
-                            <span class="font-bold">@${u.username}</span> 
-                            <span class="text-[10px] text-slate-400 uppercase">(${u.role})</span>
+            try {
+                const res = await fetch('/api/staff/list');
+                const data = await res.json();
+                const listEl = document.getElementById('existingStaffList');
+                const users = data.users || data; // Handles both dictionary and direct list responses
+                
+                if (users && users.length > 0) {
+                    listEl.innerHTML = users.map(u => `
+                        <div class="py-2.5 flex items-center justify-between">
+                            <div>
+                                <span class="font-bold text-slate-900 dark:text-white">@${u.username}</span> 
+                                <span class="text-[10px] text-slate-400 uppercase font-semibold">(${u.role})</span>
+                            </div>
+                            ${u.role !== 'admin' ? `
+                                <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">
+                                    Reset Password
+                                </button>
+                            ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
                         </div>
-                        ${u.role !== 'admin' ? `
-                            <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">
-                                Reset Password
-                            </button>
-                        ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
-                    </div>
+                    `).join('');
+                } else {
+                    listEl.innerHTML = `<div class="py-3 text-center text-slate-400">No cashiers found. Create one below!</div>`;
+                }
+            } catch (err) {
+                console.error("Error loading staff:", err);
+            }
+        }
+
+        async function fetchDrilldownData() {
+            const dateVal = document.getElementById('drilldownDate').value;
+            let url = `/api/transactions/drilldown?mode=${activeDrillMode}`;
+            if (dateVal) url += `&date=${dateVal}`;
+
+            const res = await fetch(url);
+            const d = await res.json();
+            const totalVal = parseFloat(d.total_amount) || 0;
+            document.getElementById('drilldownSubTotal').innerText = `Total: KES ${Math.round(totalVal).toLocaleString()}`;
+            
+            const tbody = document.getElementById('drilldownTableBody');
+            if (d.transactions && d.transactions.length > 0) {
+                tbody.innerHTML = d.transactions.map(tx => `
+                    <tr>
+                        <td class="py-2 font-mono text-[11px] text-slate-500">${tx.timestamp}</td>
+                        <td class="py-2 font-bold">${tx.product_name}</td>
+                        <td class="py-2">${tx.quantity}</td>
+                        <td class="py-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${tx.payment_method === 'CASH' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400'}">${tx.payment_method}</span></td>
+                        <td class="py-2 font-black font-mono">KES ${Math.round(parseFloat(tx.total_amount) || 0).toLocaleString()}</td>
+                    </tr>
                 `).join('');
+            } else {
+                tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-slate-400">No transactions found for this selection</td></tr>`;
             }
         }
 
