@@ -6,12 +6,19 @@ from datetime import datetime, date
 from functools import wraps
 from flask import (
     Flask, render_template_string, request, jsonify, 
-    send_from_directory, session, redirect, url_for
+    send_from_directory, session, redirect, url_for, Response
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "kiosk_pos_enterprise_multitenant_key_2026")
+
+app.config.update(
+    SESSION_COOKIE_SECURE=False,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=False
+)
 
 BASE_DIR = os.environ.get(
     "RENDER_DISK_PATH",
@@ -27,16 +34,15 @@ def init_db():
     conn.execute("PRAGMA foreign_keys = ON;")
     cursor = conn.cursor()
 
-    # 1. Shops Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shops (
             shop_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            store_logo TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     """)
 
-    # 2. Users Table (with phone and recovery_pin for self-serve reset)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +57,6 @@ def init_db():
         );
     """)
 
-    # 3. Items Table (with direct current_stock column)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS items (
             item_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +70,6 @@ def init_db():
         );
     """)
 
-    # 4. Transactions Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +86,11 @@ def init_db():
         );
     """)
 
-    # --- Live Migration Check for Existing Database ---
+    cursor.execute("PRAGMA table_info(shops);")
+    shop_cols = [row["name"] for row in cursor.fetchall()]
+    if "store_logo" not in shop_cols:
+        cursor.execute("ALTER TABLE shops ADD COLUMN store_logo TEXT;")
+
     cursor.execute("PRAGMA table_info(users);")
     user_cols = [row["name"] for row in cursor.fetchall()]
     if "phone" not in user_cols:
@@ -90,38 +98,6 @@ def init_db():
     if "recovery_pin" not in user_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN recovery_pin TEXT;")
 
-    cursor.execute("PRAGMA table_info(items);")
-    item_cols = [row["name"] for row in cursor.fetchall()]
-    if "shop_id" not in item_cols:
-        cursor.execute("ALTER TABLE items ADD COLUMN shop_id INTEGER DEFAULT 1;")
-    if "current_stock" not in item_cols:
-        cursor.execute("ALTER TABLE items ADD COLUMN current_stock INTEGER NOT NULL DEFAULT 0;")
-        # Backfill initial stock from past transaction sums if upgrading
-        cursor.execute("""
-            UPDATE items 
-            SET current_stock = COALESCE((
-                SELECT SUM(
-                    CASE 
-                        WHEN movement_type = 'IN' THEN quantity
-                        WHEN movement_type = 'OUT' THEN -quantity
-                        WHEN movement_type = 'ADJUSTMENT' THEN quantity
-                        ELSE 0 
-                    END
-                ) FROM transactions WHERE transactions.item_id = items.item_id
-            ), 0);
-        """)
-    if "created_at" not in item_cols:
-        cursor.execute("ALTER TABLE items ADD COLUMN created_at DATETIME;")
-        cursor.execute("UPDATE items SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL;")
-
-    cursor.execute("PRAGMA table_info(transactions);")
-    tx_cols = [row["name"] for row in cursor.fetchall()]
-    if "shop_id" not in tx_cols:
-        cursor.execute("ALTER TABLE transactions ADD COLUMN shop_id INTEGER DEFAULT 1;")
-    if "user_id" not in tx_cols:
-        cursor.execute("ALTER TABLE transactions ADD COLUMN user_id INTEGER DEFAULT 1;")
-
-    # Seed initial shop and master admin if empty
     cursor.execute("SELECT COUNT(*) FROM shops;")
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO shops (shop_id, name) VALUES (1, 'Kiosk Track Main');")
@@ -129,22 +105,6 @@ def init_db():
             INSERT INTO users (shop_id, username, phone, recovery_pin, password_hash, role)
             VALUES (1, 'admin', '0700000000', '1234', ?, 'admin');
         """, (generate_password_hash("admin123"),))
-
-    # Compatibility view
-    cursor.execute("DROP VIEW IF EXISTS view_current_stock;")
-    cursor.execute("""
-        CREATE VIEW view_current_stock AS
-        SELECT 
-            item_id,
-            shop_id,
-            name,
-            unit_price,
-            current_stock,
-            reorder_level,
-            is_active
-        FROM items
-        WHERE is_active = 1;
-    """)
 
     conn.commit()
     conn.close()
@@ -207,37 +167,32 @@ HTML_TEMPLATE = """
         }
     </script>
 </head>
-<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen font-sans antialiased transition-colors duration-200">
+<body class="bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen font-sans antialiased transition-colors duration-200 overflow-x-hidden">
 
-    <!-- Top Navigation -->
-    <nav class="sticky top-0 z-40 backdrop-blur-xl bg-white/80 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800/80 px-4 py-3">
-        <div class="max-w-3xl mx-auto flex items-center justify-between">
-            <div class="flex items-center gap-2.5">
-                <img src="/static/app_icon.svg" alt="Logo" class="w-9 h-9 rounded-xl shadow-md">
-                <div>
-                    <h1 class="text-base font-extrabold tracking-tight text-slate-900 dark:text-white leading-none">{{ session.get('shop_name', 'Kiosk Track') }}</h1>
-                    <div class="flex items-center gap-2 mt-0.5">
-                        <span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> @{{ session.get('username') }} ({{ session.get('role')|capitalize }})
-                        </span>
-                        <a href="/logout" class="text-[10px] font-bold text-rose-500 hover:underline">Log out</a>
-                    </div>
+    <nav class="sticky top-0 z-40 backdrop-blur-xl bg-white/90 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 px-3 py-2.5 shadow-sm">
+        <div class="max-w-3xl mx-auto flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2.5 min-w-0">
+                <div class="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 border-2 border-emerald-300 dark:border-emerald-800 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-black text-sm overflow-hidden shadow-sm shrink-0">
+                    <span id="navAvatarInitials">{{ session.get('shop_name', 'K')[0]|upper }}</span>
+                    <img id="navAvatarImage" src="" alt="Logo" class="w-full h-full object-cover hidden">
+                </div>
+                <div class="min-w-0">
+                    <h1 class="text-sm font-extrabold tracking-tight text-slate-900 dark:text-white truncate leading-tight">{{ session.get('shop_name', 'Kiosk Track') }}</h1>
+                    <span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 truncate">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0"></span> @{{ session.get('username') }}
+                    </span>
                 </div>
             </div>
 
-            <!-- Top Action Group -->
-            <div class="flex items-center gap-1.5 sm:gap-2">
-                <button id="directInstallBtn" onclick="triggerNativeInstall()" class="hidden bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 text-xs font-black px-3 py-1.5 rounded-xl shadow-md active:scale-95 transition flex items-center gap-1">
-                    <span>📲</span> Install
-                </button>
-                <button onclick="toggleTheme()" class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:scale-105 active:scale-95 transition">
+            <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="toggleTheme()" class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:scale-105 active:scale-95 transition shadow-sm">
                     <span id="themeIcon">🌙</span>
                 </button>
                 {% if session.get('role') == 'admin' %}
-                <button onclick="openStaffModal()" title="Manage Staff" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold px-2.5 py-2 rounded-xl transition flex items-center gap-1">
+                <button onclick="openStaffModal()" title="Manage Staff" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-800 dark:text-slate-200 text-[11px] font-bold px-2.5 py-1.5 rounded-xl transition shadow-sm flex items-center gap-1">
                     <span>👥</span> Staff
                 </button>
-                <button onclick="openAddItemModal()" class="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold px-3 py-2 rounded-xl shadow transition flex items-center gap-1">
+                <button onclick="openAddItemModal()" class="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-[11px] font-bold px-2.5 py-1.5 rounded-xl shadow transition flex items-center gap-1">
                     <span>+</span> Item
                 </button>
                 {% endif %}
@@ -245,89 +200,82 @@ HTML_TEMPLATE = """
         </div>
     </nav>
 
-    <!-- Notification Toast -->
     <div id="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 opacity-0 pointer-events-none transform -translate-y-2 max-w-sm w-11/12"></div>
 
-    <main class="max-w-3xl mx-auto px-3 sm:px-4 pt-4 pb-28">
+    <main class="max-w-3xl mx-auto px-3 sm:px-4 pt-3 pb-28">
 
-        <!-- SCREEN 1: POS COUNTER -->
         <section id="screen-counter" class="tab-screen">
-            
-            <!-- Date Context Selector -->
-            <div class="bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 mb-3 shadow-sm flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div class="flex items-center gap-2">
                     <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">📅 Entry Date:</span>
                     <input type="date" id="activeSaleDate" value="{{ today_date }}" onchange="onSaleDateChange()" 
-                           class="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-2.5 py-1 text-xs font-bold text-slate-900 dark:text-white">
+                           class="bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1 text-xs font-bold text-slate-900 dark:text-white">
                 </div>
                 <div id="dateNotice" class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
                     <span>🟢</span> Live Mode (Deducts Stock)
                 </div>
             </div>
 
-            <!-- Stats Bar -->
-            <div class="grid grid-cols-3 gap-2.5 mb-4">
-                <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">💵 Cash</span>
-                    <div class="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400" id="statCash">KES {{ "{:,.0f}".format(today_cash) }}</div>
+            <div class="grid grid-cols-3 gap-2 mb-3">
+                <div onclick="openDrilldown('CASH')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02] active:scale-95">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">💵 Cash</span>
+                    <div class="text-sm sm:text-base font-black text-emerald-600 dark:text-emerald-400 truncate" id="statCash">KES {{ "{:,.0f}".format(today_cash) }}</div>
                 </div>
-                <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">📲 M-Pesa</span>
-                    <div class="text-base sm:text-lg font-black text-green-600 dark:text-green-400" id="statMpesa">KES {{ "{:,.0f}".format(today_mpesa) }}</div>
+                <div onclick="openDrilldown('MPESA')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-green-500 transition hover:scale-[1.02] active:scale-95">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">📲 M-Pesa</span>
+                    <div class="text-sm sm:text-base font-black text-green-600 dark:text-green-400 truncate" id="statMpesa">KES {{ "{:,.0f}".format(today_mpesa) }}</div>
                 </div>
-                <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">📊 Total Sales</span>
-                    <div class="text-base sm:text-lg font-black text-slate-900 dark:text-white" id="statTotal">KES {{ "{:,.0f}".format(today_cash + today_mpesa) }}</div>
+                <div onclick="openDrilldown('TOTAL')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-indigo-500 transition hover:scale-[1.02] active:scale-95">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">📊 Total Sales</span>
+                    <div class="text-sm sm:text-base font-black text-slate-900 dark:text-white truncate" id="statTotal">KES {{ "{:,.0f}".format(today_cash + today_mpesa) }}</div>
                 </div>
             </div>
 
-            <!-- Fast Search -->
-            <div class="sticky top-[61px] z-30 mb-4">
+            <div class="sticky top-[61px] z-30 mb-3">
                 <div class="relative shadow-sm rounded-2xl">
                     <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                     </div>
                     <input type="text" id="counterSearch" oninput="filterList('counterSearch', '.counter-card')" placeholder="Search items..." 
-                           class="w-full pl-11 pr-10 py-3 bg-white dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-700/80 text-slate-900 dark:text-white rounded-2xl placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium">
+                           class="w-full pl-11 pr-10 py-2.5 bg-white dark:bg-slate-900 backdrop-blur-md border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium shadow-sm">
                 </div>
             </div>
 
-            <!-- Products List -->
             <div class="space-y-2.5" id="counterList">
                 {% for item in items %}
-                <div class="counter-card bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800/80 rounded-2xl p-3.5 hover:border-slate-300 dark:hover:border-slate-700 transition relative shadow-sm" 
+                <div class="counter-card bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 hover:border-slate-300 dark:hover:border-slate-700 transition relative shadow-sm" 
                      id="item-card-{{ item['item_id'] }}" data-name="{{ item['name'] }}">
                     <div class="flex items-start justify-between gap-2 mb-2">
                         <div>
-                            <h2 class="font-bold text-slate-900 dark:text-white text-sm sm:text-base leading-snug">{{ item['name'] }}</h2>
+                            <h2 class="font-bold text-slate-900 dark:text-white text-sm leading-snug">{{ item['name'] }}</h2>
                             <span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">KES {{ "{:,.1f}".format(item['unit_price']) }}</span>
                         </div>
                         <div class="flex items-center gap-1.5">
-                            <span id="badge-{{ item['item_id'] }}" class="px-2.5 py-1 rounded-full text-xs font-bold {% if item['current_stock'] <= 0 %}bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-800{% elif item['current_stock'] <= item['reorder_level'] %}bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800{% else %}bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700{% endif %}">
+                            <span id="badge-{{ item['item_id'] }}" class="px-2.5 py-0.5 rounded-full text-[11px] font-bold {% if item['current_stock'] <= 0 %}bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-800{% elif item['current_stock'] <= item['reorder_level'] %}bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800{% else %}bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700{% endif %}">
                                 Stock: <span id="stock-val-{{ item['item_id'] }}">{{ item['current_stock'] }}</span>
                             </span>
                         </div>
                     </div>
 
-                    <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/70">
+                    <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
                         <div class="flex items-center gap-1.5">
                             <div class="flex items-center bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-1">
-                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', -1)" class="w-6 h-7 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">-</button>
+                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', -1)" class="w-6 h-6 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">-</button>
                                 <input type="number" id="qty-{{ item['item_id'] }}" value="1" min="1" 
                                        class="w-8 bg-transparent text-center text-xs font-bold text-slate-900 dark:text-white focus:outline-none">
-                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', 1)" class="w-6 h-7 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">+</button>
+                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', 1)" class="w-6 h-6 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">+</button>
                             </div>
 
                             <button onclick="makeSale({{ item['item_id'] }}, 'CASH')" 
-                                    class="bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
+                                    class="bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 hover:scale-105 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
                                 <span>💵</span> Cash
                             </button>
                             <button onclick="makeSale({{ item['item_id'] }}, 'MPESA')" 
-                                    class="bg-green-600 hover:bg-green-500 text-white active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
+                                    class="bg-green-600 hover:bg-green-500 text-white active:scale-95 hover:scale-105 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
                                 <span>📲</span> M-Pesa
                             </button>
                             <button onclick="openSplitModal({{ item['item_id'] }}, '{{ item['name'] }}', {{ item['unit_price'] }})" 
-                                    class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800/60 text-amber-800 dark:text-amber-300 active:scale-95 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
+                                    class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
                                 <span>⚡</span> Split
                             </button>
                         </div>
@@ -335,14 +283,14 @@ HTML_TEMPLATE = """
                         {% if session.get('role') == 'admin' %}
                         <div class="flex items-center gap-1.5">
                             <button onclick="reverseSale({{ item['item_id'] }})" 
-                                    title="Undo accidental sale"
-                                    class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 active:scale-95 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
+                                    title="Undo sale"
+                                    class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
                                 <span>↩</span> Return
                             </button>
                             <input type="number" id="restock-qty-{{ item['item_id'] }}" placeholder="+Qty" min="1" 
                                    class="w-12 px-2 py-1.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-center text-xs text-slate-900 dark:text-white focus:outline-none">
                             <button onclick="makeRestock({{ item['item_id'] }})" 
-                                    class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-sky-700 dark:text-sky-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 transition flex items-center gap-1">
+                                    class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 hover:scale-105 text-sky-700 dark:text-sky-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 transition flex items-center gap-1">
                                 <span>📦</span> + In
                             </button>
                         </div>
@@ -354,10 +302,9 @@ HTML_TEMPLATE = """
         </section>
 
         {% if session.get('role') == 'admin' %}
-        <!-- SCREEN 2: REPORTS & ANALYTICS (Admin Only) -->
         <section id="screen-reports" class="tab-screen hidden">
-            <div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
-                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm space-y-4">
+                <div class="flex flex-wrap items-center justify-between gap-3">
                     <div>
                         <h2 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                             <span>📊</span> Sales & Staff Shifts
@@ -365,34 +312,33 @@ HTML_TEMPLATE = """
                         <p class="text-xs text-slate-500">Historical performance and staff handovers</p>
                     </div>
                     <div class="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
-                        <button onclick="setReportRange('today', this)" class="report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white">Today</button>
-                        <button onclick="setReportRange('yesterday', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">Yesterday</button>
-                        <button onclick="setReportRange('week', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">7 Days</button>
-                        <button onclick="setReportRange('month', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">30 Days</button>
+                        <button onclick="setReportRange('today', this)" class="report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white hover:opacity-90 transition">Today</button>
+                        <button onclick="setReportRange('yesterday', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-white transition">Yesterday</button>
+                        <button onclick="setReportRange('week', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-white transition">7 Days</button>
+                        <button onclick="setReportRange('month', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-white transition">30 Days</button>
                     </div>
                 </div>
 
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
-                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
                         <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💰</span> Revenue</span>
                         <div id="repTotalRev" class="text-base font-black text-slate-900 dark:text-white">KES 0</div>
                     </div>
-                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
                         <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📦</span> Units Sold</span>
                         <div id="repTotalUnits" class="text-base font-black text-emerald-600 dark:text-emerald-400">0 pcs</div>
                     </div>
-                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
                         <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💵</span> Cash</span>
                         <div id="repCash" class="text-base font-black text-emerald-500">KES 0</div>
                     </div>
-                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
                         <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📲</span> M-Pesa</span>
                         <div id="repMpesa" class="text-base font-black text-green-500">KES 0</div>
                     </div>
                 </div>
 
-                <!-- Staff Performance Breakdown Table -->
-                <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 mb-4">
+                <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
                     <h3 class="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-3 flex items-center gap-1.5">
                         <span>👥</span> Staff Shift Breakdown
                     </h3>
@@ -408,7 +354,7 @@ HTML_TEMPLATE = """
                                     <th class="py-2 font-bold">Total</th>
                                 </tr>
                             </thead>
-                            <tbody id="staffTableBody" class="divide-y divide-slate-100 dark:divide-slate-800/70">
+                            <tbody id="staffTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
                                 <tr><td colspan="6" class="py-3 text-center text-slate-400">Loading staff shift details...</td></tr>
                             </tbody>
                         </table>
@@ -418,27 +364,28 @@ HTML_TEMPLATE = """
             </div>
         </section>
 
-        <!-- SCREEN 3: PHYSICAL STOCK TAKE (Admin Only) -->
         <section id="screen-audit" class="tab-screen hidden">
-            <div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
                 <div class="mb-4">
                     <h2 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                         <span>📋</span> Physical Stock Calibration
                     </h2>
                     <p class="text-xs text-slate-500">Setting counts here overrides your shelf total directly</p>
                 </div>
-                <div class="divide-y divide-slate-100 dark:divide-slate-800/80 max-h-[500px] overflow-y-auto pr-1">
+                <div class="divide-y divide-slate-100 dark:divide-slate-800 max-h-[500px] overflow-y-auto pr-1">
                     {% for item in items %}
-                    <div class="audit-row py-2.5 flex items-center justify-between gap-2">
-                        <div>
-                            <div class="font-bold text-slate-900 dark:text-white text-xs leading-snug">{{ item['name'] }}</div>
-                            <span class="text-[11px] text-slate-500">Current Count: <b id="audit-sys-{{ item['item_id'] }}">{{ item['current_stock'] }}</b></span>
+                    <div class="audit-row py-3 flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-3">
+                            <div>
+                                <div class="font-bold text-slate-900 dark:text-white text-xs leading-snug">{{ item['name'] }}</div>
+                                <span class="text-[11px] text-slate-500">Current Count: <b id="audit-sys-{{ item['item_id'] }}">{{ item['current_stock'] }}</b></span>
+                            </div>
                         </div>
                         <div class="flex items-center gap-1.5">
                             <input type="number" id="counted-{{ item['item_id'] }}" placeholder="Counted" 
-                                   class="w-16 px-2 py-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-center text-xs font-bold text-slate-900 dark:text-white">
+                                   class="w-16 px-2 py-1.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-center text-xs font-bold text-slate-900 dark:text-white">
                             <button onclick="updateStockTake({{ item['item_id'] }})" 
-                                    class="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs px-2.5 py-1 rounded-lg flex items-center gap-1">
+                                    class="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition">
                                 <span>✓</span> Set
                             </button>
                         </div>
@@ -449,92 +396,84 @@ HTML_TEMPLATE = """
         </section>
         {% endif %}
 
-        <!-- STAFF MANAGEMENT MODAL (Admin Only) -->
         <div id="staffModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
                     <h3 class="text-sm font-bold text-slate-900 dark:text-white">Manage Cashiers</h3>
-                    <button onclick="closeStaffModal()" class="text-slate-400 text-lg">&times;</button>
+                    <button onclick="closeStaffModal()" class="text-slate-400 text-lg font-bold">&times;</button>
                 </div>
-                
-                <!-- Existing Staff List with Password Reset -->
                 <div class="space-y-2 max-h-48 overflow-y-auto pr-1">
                     <h4 class="text-[10px] font-bold uppercase text-slate-400">Current Team</h4>
-                    <div id="existingStaffList" class="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
-                        <!-- Loaded dynamically -->
-                    </div>
+                    <div id="existingStaffList" class="divide-y divide-slate-100 dark:divide-slate-800 text-xs"></div>
                 </div>
-
                 <div class="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2 text-xs">
                     <h4 class="text-[10px] font-bold uppercase text-slate-400">Create New Cashier</h4>
                     <div>
                         <label class="block font-semibold mb-1">Username</label>
-                        <input type="text" id="staffUsername" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                        <input type="text" id="staffUsername" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                     </div>
                     <div>
                         <label class="block font-semibold mb-1">Password / PIN</label>
-                        <input type="password" id="staffPassword" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                        <input type="password" id="staffPassword" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                     </div>
                 </div>
                 <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeStaffModal()" class="px-3 py-1.5 text-xs text-slate-500">Close</button>
-                    <button onclick="submitNewStaff()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-1.5 rounded-xl">Create Cashier</button>
+                    <button onclick="closeStaffModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold">Close</button>
+                    <button onclick="submitNewStaff()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-2 rounded-xl">Create Cashier</button>
                 </div>
             </div>
         </div>
 
-        <!-- ADD ITEM MODAL -->
         <div id="addItemModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
                     <h3 class="text-sm font-bold text-slate-900 dark:text-white">Add New Product</h3>
-                    <button onclick="closeAddItemModal()" class="text-slate-400 text-lg">&times;</button>
+                    <button onclick="closeAddItemModal()" class="text-slate-400 text-lg font-bold">&times;</button>
                 </div>
                 <div class="space-y-3 text-xs">
                     <div>
                         <label class="block font-semibold mb-1">Product Name</label>
-                        <input type="text" id="newItemName" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                        <input type="text" id="newItemName" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                     </div>
                     <div class="grid grid-cols-2 gap-2">
                         <div>
                             <label class="block font-semibold mb-1">Selling Price (KES)</label>
-                            <input type="number" id="newItemPrice" step="0.5" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                            <input type="number" id="newItemPrice" step="0.5" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                         </div>
                         <div>
                             <label class="block font-semibold mb-1">Initial Stock</label>
-                            <input type="number" id="newItemStock" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                            <input type="number" id="newItemStock" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                         </div>
                     </div>
                 </div>
                 <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeAddItemModal()" class="px-3 py-1.5 text-xs text-slate-500">Cancel</button>
-                    <button onclick="submitNewItem()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-1.5 rounded-xl">Save</button>
+                    <button onclick="closeAddItemModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold">Cancel</button>
+                    <button onclick="submitNewItem()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-2 rounded-xl">Save</button>
                 </div>
             </div>
         </div>
 
-        <!-- SPLIT PAYMENT MODAL -->
         <div id="splitModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
                     <div>
-                        <h3 class="text-sm font-bold" id="splitItemName">Item Name</h3>
+                        <h3 class="text-sm font-bold text-slate-900 dark:text-white" id="splitItemName">Item Name</h3>
                         <span class="text-xs text-emerald-600 font-bold" id="splitTotalDisplay">Total: KES 0</span>
                     </div>
-                    <button onclick="closeSplitModal()" class="text-slate-400 text-lg">&times;</button>
+                    <button onclick="closeSplitModal()" class="text-slate-400 text-lg font-bold">&times;</button>
                 </div>
                 <div class="space-y-3 text-xs">
                     <div>
                         <label class="block font-semibold mb-1">Cash (KES)</label>
-                        <input type="number" id="splitCashInput" oninput="autoCalculateMpesa()" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                        <input type="number" id="splitCashInput" oninput="autoCalculateMpesa()" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                     </div>
                     <div>
                         <label class="block font-semibold mb-1">M-Pesa (KES)</label>
-                        <input type="number" id="splitMpesaInput" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
+                        <input type="number" id="splitMpesaInput" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                     </div>
                 </div>
                 <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeSplitModal()" class="px-3 py-1.5 text-xs text-slate-500">Cancel</button>
+                    <button onclick="closeSplitModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold">Cancel</button>
                     <button onclick="submitSplitSale()" class="bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl">Complete Sale</button>
                 </div>
             </div>
@@ -542,23 +481,22 @@ HTML_TEMPLATE = """
 
     </main>
 
-    <!-- Bottom Navigation -->
-    <nav class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800/90 pb-[env(safe-area-inset-bottom)]">
+    <nav class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800 pb-[env(safe-area-inset-bottom)] shadow-lg">
         <div class="max-w-md mx-auto grid {% if session.get('role') == 'admin' %}grid-cols-3{% else %}grid-cols-1{% endif %} h-16">
-            <button onclick="switchTab('counter', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600">
-                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800/60 shadow-sm tab-indicator">
+            <button onclick="switchTab('counter', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400">
+                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800 shadow-sm tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
                 </div>
                 <span class="text-[11px] font-bold tracking-tight">Counter</span>
             </button>
             {% if session.get('role') == 'admin' %}
-            <button onclick="switchTab('reports', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400">
+            <button onclick="switchTab('reports', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition">
                 <div class="w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
                 </div>
                 <span class="text-[11px] font-bold tracking-tight">Reports</span>
             </button>
-            <button onclick="switchTab('audit', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400">
+            <button onclick="switchTab('audit', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition">
                 <div class="w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
                 </div>
@@ -570,53 +508,34 @@ HTML_TEMPLATE = """
 
     <script>
         const TODAY_STR = "{{ today_date }}";
-
         let deferredPrompt = null;
-        const installBtn = document.getElementById('directInstallBtn');
 
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js', { scope: '/' })
-                .catch(err => console.error('SW Registration Failed:', err));
-        }
-
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault();
-            deferredPrompt = e;
-            if (installBtn) installBtn.classList.remove('hidden');
-        });
-
-        async function triggerNativeInstall() {
-            if (!deferredPrompt) {
-                alert("To install, open browser menu (⋮) and tap 'Install app' or 'Add to Home screen'.");
-                return;
-            }
-            deferredPrompt.prompt();
-            const { outcome } = await deferredPrompt.userChoice;
-            if (outcome === 'accepted' && installBtn) {
-                installBtn.classList.add('hidden');
-            }
-            deferredPrompt = null;
-        }
-
-        window.addEventListener('appinstalled', () => {
-            if (installBtn) installBtn.classList.add('hidden');
-            showToast("Kiosk Track installed successfully!");
-        });
-
-        function onSaleDateChange() {
-            const selected = document.getElementById('activeSaleDate').value;
-            const notice = document.getElementById('dateNotice');
-            if (selected === TODAY_STR) {
-                notice.innerHTML = "<span>🟢</span> Live Mode (Deducts Stock)";
-                notice.className = "text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1";
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedTheme = localStorage.getItem('kiosk_theme');
+            const themeIcon = document.getElementById('themeIcon');
+            if (savedTheme === 'light') {
+                document.documentElement.classList.remove('dark');
+                if (themeIcon) themeIcon.innerText = '☀️';
             } else {
-                notice.innerHTML = "<span>⚠️</span> Backdated Mode (Reports Only - Shelf Stock Preserved)";
-                notice.className = "text-[11px] font-bold text-amber-500 flex items-center gap-1";
+                document.documentElement.classList.add('dark');
+                if (themeIcon) themeIcon.innerText = '🌙';
             }
+            fetchServerLogo();
+        });
+
+        async function fetchServerLogo() {
+            try {
+                const res = await fetch('/api/store/logo');
+                const d = await res.json();
+                if (d.logo) { applyAvatar(d.logo); }
+            } catch (err) { console.error(err); }
         }
 
         function toggleTheme() {
-            document.documentElement.classList.toggle('dark');
+            const isDark = document.documentElement.classList.toggle('dark');
+            const themeIcon = document.getElementById('themeIcon');
+            if (themeIcon) { themeIcon.innerText = isDark ? '🌙' : '☀️'; }
+            localStorage.setItem('kiosk_theme', isDark ? 'dark' : 'light');
         }
 
         function switchTab(name, btn) {
@@ -761,7 +680,7 @@ HTML_TEMPLATE = """
 
         function setReportRange(range, btn) {
             document.querySelectorAll('.report-range-btn').forEach(b => {
-                b.className = 'report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400';
+                b.className = 'report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-white transition';
             });
             btn.className = 'report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white';
             loadReports(range);
@@ -797,12 +716,13 @@ HTML_TEMPLATE = """
             const res = await fetch('/api/staff/list');
             const data = await res.json();
             const listEl = document.getElementById('existingStaffList');
-            if (data.users && data.users.length > 0) {
-                listEl.innerHTML = data.users.map(u => `
-                    <div class="py-2 flex items-center justify-between">
+            const users = data.users || data;
+            if (users && users.length > 0) {
+                listEl.innerHTML = users.map(u => `
+                    <div class="py-2.5 flex items-center justify-between">
                         <div>
-                            <span class="font-bold">@${u.username}</span> 
-                            <span class="text-[10px] text-slate-400 uppercase">(${u.role})</span>
+                            <span class="font-bold text-slate-900 dark:text-white">@${u.username}</span> 
+                            <span class="text-[10px] text-slate-400 uppercase font-semibold">(${u.role})</span>
                         </div>
                         ${u.role !== 'admin' ? `
                             <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">
@@ -811,6 +731,8 @@ HTML_TEMPLATE = """
                         ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
                     </div>
                 `).join('');
+            } else {
+                listEl.innerHTML = `<div class="py-3 text-center text-slate-400">No cashiers found. Create one below!</div>`;
             }
         }
 
@@ -879,18 +801,20 @@ AUTH_TEMPLATE = """
     <title>Login - Kiosk Track</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-2xl">
-        <h1 class="text-xl font-black text-center mb-1 text-white tracking-tight">Kiosk Track</h1>
-        <p class="text-xs text-slate-400 text-center mb-6">Cloud Inventory & Point of Sale</p>
+<body class="bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-2xl space-y-4">
+        <div class="text-center space-y-2">
+            <h1 class="text-xl font-black text-slate-900 dark:text-white tracking-tight">Kiosk Track</h1>
+            <p class="text-xs text-slate-500 font-medium">Cloud Inventory & Point of Sale</p>
+        </div>
 
         {% if error %}
-        <div class="bg-rose-950/80 border border-rose-800 text-rose-300 text-xs p-3 rounded-xl mb-4 text-center font-semibold">
+        <div class="bg-rose-100 dark:bg-rose-950/80 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs p-3 rounded-xl text-center font-semibold">
             {{ error }}
         </div>
         {% endif %}
         {% if message %}
-        <div class="bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs p-3 rounded-xl mb-4 text-center font-semibold">
+        <div class="bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs p-3 rounded-xl text-center font-semibold">
             {{ message }}
         </div>
         {% endif %}
@@ -898,58 +822,58 @@ AUTH_TEMPLATE = """
         <form method="POST" action="{{ action_url }}" class="space-y-3.5 text-xs">
             {% if mode == 'register' %}
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Shop Name</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Shop Name</label>
                 <input type="text" name="shop_name" required placeholder="e.g. Westlands Mini Mart" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Your Mobile Phone</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Your Mobile Phone</label>
                 <input type="tel" name="phone" required placeholder="e.g. 0712345678" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Admin Username</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Admin Username</label>
                 <input type="text" name="username" required placeholder="Enter username" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
                 <input type="password" name="password" required placeholder="••••••••" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN (Used if you forget password)</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN</label>
                 <input type="password" name="recovery_pin" maxlength="4" required placeholder="4-digit PIN (e.g. 1997)" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
 
             {% elif mode == 'forgot' %}
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Registered Phone Number</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Registered Phone Number</label>
                 <input type="tel" name="phone" required placeholder="e.g. 0712345678" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN</label>
                 <input type="password" name="recovery_pin" maxlength="4" required placeholder="••••" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">New Password</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">New Password</label>
                 <input type="password" name="new_password" required placeholder="Enter new password" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
 
             {% else %}
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Username or Phone</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Username or Phone</label>
                 <input type="text" name="login_identifier" required placeholder="Enter username or phone" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
+                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
                 <input type="password" name="password" required placeholder="••••••••" 
-                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             {% endif %}
 
@@ -958,14 +882,14 @@ AUTH_TEMPLATE = """
             </button>
         </form>
 
-        <div class="mt-6 pt-4 border-t border-slate-800 text-center text-xs space-y-2">
+        <div class="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800 text-center text-xs space-y-2">
             {% if mode == 'login' %}
-            <div><a href="/forgot-password" class="text-slate-400 hover:text-white">Forgot Password?</a></div>
-            <div><span class="text-slate-500">Want to run your shop?</span> <a href="/register-shop" class="text-emerald-400 font-bold hover:underline">Register New Shop</a></div>
+            <div><a href="/forgot-password" class="text-slate-500 dark:text-slate-400 hover:text-emerald-500 font-bold">Forgot Password?</a></div>
+            <div><span class="text-slate-400">Want to run your shop?</span> <a href="/register-shop" class="text-emerald-600 dark:text-emerald-400 font-bold hover:underline">Register New Shop</a></div>
             {% elif mode == 'register' %}
-            <div><span class="text-slate-500">Already registered?</span> <a href="/login" class="text-emerald-400 font-bold hover:underline">Log In</a></div>
+            <div><span class="text-slate-400">Already registered?</span> <a href="/login" class="text-emerald-600 dark:text-emerald-400 font-bold hover:underline">Log In</a></div>
             {% else %}
-            <div><a href="/login" class="text-emerald-400 font-bold hover:underline">Back to Login</a></div>
+            <div><a href="/login" class="text-emerald-600 dark:text-emerald-400 font-bold hover:underline">Back to Login</a></div>
             {% endif %}
         </div>
     </div>
@@ -994,10 +918,11 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
+            session.permanent = False
             session["user_id"] = user["user_id"]
             session["shop_id"] = user["shop_id"]
             session["username"] = user["username"]
-            session["role"] = user["role"]
+            session["role"] = user["role"].strip().lower()
             session["shop_name"] = user["shop_name"]
             return redirect(url_for("index"))
         return render_template_string(AUTH_TEMPLATE, mode="login", action_url="/login", button_text="Sign In", error="Invalid login credentials")
@@ -1098,12 +1023,33 @@ def index():
     )
 
 
+@app.route("/api/store/logo", methods=["GET", "POST"])
+@login_required
+def store_logo():
+    shop_id = session["shop_id"]
+    conn = get_db()
+    cursor = conn.cursor()
+    if request.method == "POST":
+        data = request.get_json() or {}
+        logo_data = data.get("logo", "")
+        cursor.execute("UPDATE shops SET store_logo = ? WHERE shop_id = ?", (logo_data, shop_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    else:
+        cursor.execute("SELECT store_logo FROM shops WHERE shop_id = ?", (shop_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return jsonify({"logo": row["store_logo"] if row and row["store_logo"] else ""})
+
+
 @app.route("/api/staff/list", methods=["GET"])
 @admin_required
 def list_staff():
+    shop_id = session.get("shop_id")
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? ORDER BY role ASC, username ASC;", (session["shop_id"],))
+    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? ORDER BY role ASC, username ASC;", (shop_id,))
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
@@ -1394,7 +1340,6 @@ def get_reports():
     conn = get_db()
     cursor = conn.cursor()
 
-    # Overall Summary
     cursor.execute(f"""
         SELECT 
             COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS total_units_sold,
@@ -1406,7 +1351,6 @@ def get_reports():
     """, (shop_id,))
     totals = cursor.fetchone()
 
-    # Staff Breakdown
     cursor.execute(f"""
         SELECT 
             u.username,
