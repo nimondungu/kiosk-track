@@ -2077,5 +2077,25 @@ def service_worker():
     return send_from_directory("static", "sw.js", mimetype="application/javascript")
 
 
+@app.route("/api/store/logo", methods=["GET", "POST"])
+@login_required
+def store_logo():
+    shop_id = session["shop_id"]
+    conn = get_db()
+    cursor = conn.cursor()
+    if request.method == "POST":
+        data = request.get_json() or {}
+        logo_data = data.get("logo", "")
+        cursor.execute("UPDATE shops SET store_logo = ? WHERE shop_id = ?", (logo_data, shop_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    else:
+        cursor.execute("SELECT store_logo FROM shops WHERE shop_id = ?", (shop_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return jsonify({"logo": row["store_logo"] if row and row["store_logo"] else ""})
+    
+    
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
