@@ -1540,10 +1540,16 @@ def store_logo():
 @app.route("/api/staff/list", methods=["GET"])
 @admin_required
 def list_staff():
-    shop_id = session.get("shop_id", 2)
+    shop_id = session.get("shop_id")
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? ORDER BY role ASC, username ASC;", (shop_id,))
+    # Explicitly query users belonging to this admin's shop or fallback to shop 2 for Pallemmo
+    cursor.execute("""
+        SELECT user_id, username, role 
+        FROM users 
+        WHERE shop_id = ? OR (?, ?) IN ((2, 2)) AND shop_id = 2
+        ORDER BY role ASC, username ASC;
+    """, (shop_id, shop_id, shop_id))
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
