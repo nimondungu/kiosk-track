@@ -6,19 +6,12 @@ from datetime import datetime, date
 from functools import wraps
 from flask import (
     Flask, render_template_string, request, jsonify, 
-    send_from_directory, session, redirect, url_for, Response
+    send_from_directory, session, redirect, url_for
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "kiosk_pos_enterprise_multitenant_key_2026")
-
-app.config.update(
-    SESSION_COOKIE_SECURE=False,
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
-    PERMANENT_SESSION_LIFETIME=False
-)
 
 BASE_DIR = os.environ.get(
     "RENDER_DISK_PATH",
@@ -34,15 +27,16 @@ def init_db():
     conn.execute("PRAGMA foreign_keys = ON;")
     cursor = conn.cursor()
 
+    # 1. Shops Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shops (
             shop_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            store_logo TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     """)
 
+    # 2. Users Table (with phone and recovery_pin for self-serve reset)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +51,7 @@ def init_db():
         );
     """)
 
+    # 3. Items Table (with direct current_stock column)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS items (
             item_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,6 +65,7 @@ def init_db():
         );
     """)
 
+    # 4. Transactions Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,11 +82,7 @@ def init_db():
         );
     """)
 
-    cursor.execute("PRAGMA table_info(shops);")
-    shop_cols = [row["name"] for row in cursor.fetchall()]
-    if "store_logo" not in shop_cols:
-        cursor.execute("ALTER TABLE shops ADD COLUMN store_logo TEXT;")
-
+    # --- Live Migration Check for Existing Database ---
     cursor.execute("PRAGMA table_info(users);")
     user_cols = [row["name"] for row in cursor.fetchall()]
     if "phone" not in user_cols:
@@ -98,6 +90,38 @@ def init_db():
     if "recovery_pin" not in user_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN recovery_pin TEXT;")
 
+    cursor.execute("PRAGMA table_info(items);")
+    item_cols = [row["name"] for row in cursor.fetchall()]
+    if "shop_id" not in item_cols:
+        cursor.execute("ALTER TABLE items ADD COLUMN shop_id INTEGER DEFAULT 1;")
+    if "current_stock" not in item_cols:
+        cursor.execute("ALTER TABLE items ADD COLUMN current_stock INTEGER NOT NULL DEFAULT 0;")
+        # Backfill initial stock from past transaction sums if upgrading
+        cursor.execute("""
+            UPDATE items 
+            SET current_stock = COALESCE((
+                SELECT SUM(
+                    CASE 
+                        WHEN movement_type = 'IN' THEN quantity
+                        WHEN movement_type = 'OUT' THEN -quantity
+                        WHEN movement_type = 'ADJUSTMENT' THEN quantity
+                        ELSE 0 
+                    END
+                ) FROM transactions WHERE transactions.item_id = items.item_id
+            ), 0);
+        """)
+    if "created_at" not in item_cols:
+        cursor.execute("ALTER TABLE items ADD COLUMN created_at DATETIME;")
+        cursor.execute("UPDATE items SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL;")
+
+    cursor.execute("PRAGMA table_info(transactions);")
+    tx_cols = [row["name"] for row in cursor.fetchall()]
+    if "shop_id" not in tx_cols:
+        cursor.execute("ALTER TABLE transactions ADD COLUMN shop_id INTEGER DEFAULT 1;")
+    if "user_id" not in tx_cols:
+        cursor.execute("ALTER TABLE transactions ADD COLUMN user_id INTEGER DEFAULT 1;")
+
+    # Seed initial shop and master admin if empty
     cursor.execute("SELECT COUNT(*) FROM shops;")
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO shops (shop_id, name) VALUES (1, 'Kiosk Track Main');")
@@ -105,6 +129,22 @@ def init_db():
             INSERT INTO users (shop_id, username, phone, recovery_pin, password_hash, role)
             VALUES (1, 'admin', '0700000000', '1234', ?, 'admin');
         """, (generate_password_hash("admin123"),))
+
+    # Compatibility view
+    cursor.execute("DROP VIEW IF EXISTS view_current_stock;")
+    cursor.execute("""
+        CREATE VIEW view_current_stock AS
+        SELECT 
+            item_id,
+            shop_id,
+            name,
+            unit_price,
+            current_stock,
+            reorder_level,
+            is_active
+        FROM items
+        WHERE is_active = 1;
+    """)
 
     conn.commit()
     conn.close()
@@ -167,141 +207,143 @@ HTML_TEMPLATE = """
         }
     </script>
 </head>
-<body class="bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen font-sans antialiased transition-colors duration-200 overflow-x-hidden">
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen font-sans antialiased transition-colors duration-200">
 
-    <nav class="sticky top-0 z-40 backdrop-blur-xl bg-white/90 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800 px-3 py-2.5 shadow-sm">
-        <div class="max-w-3xl mx-auto flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2.5 min-w-0">
-                <div class="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 border-2 border-emerald-300 dark:border-emerald-800 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-black text-sm overflow-hidden shadow-sm shrink-0">
-                    <span id="navAvatarInitials">{{ session.get('shop_name', 'K')[0]|upper }}</span>
-                    <img id="navAvatarImage" src="" alt="Logo" class="w-full h-full object-cover hidden">
-                </div>
-                <div class="min-w-0">
-                    <h1 class="text-sm font-extrabold tracking-tight text-slate-900 dark:text-white truncate leading-tight">{{ session.get('shop_name', 'Kiosk Track') }}</h1>
-                    <span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 truncate">
-                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0"></span> @{{ session.get('username') }}
-                    </span>
+    <!-- Top Navigation -->
+    <nav class="sticky top-0 z-40 backdrop-blur-xl bg-white/80 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800/80 px-4 py-3">
+        <div class="max-w-3xl mx-auto flex items-center justify-between">
+            <div class="flex items-center gap-2.5">
+                <img src="/static/app_icon.svg" alt="Logo" class="w-9 h-9 rounded-xl shadow-md">
+                <div>
+                    <h1 class="text-base font-extrabold tracking-tight text-slate-900 dark:text-white leading-none">{{ session.get('shop_name', 'Kiosk Track') }}</h1>
+                    <div class="flex items-center gap-2 mt-0.5">
+                        <span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> @{{ session.get('username') }} ({{ session.get('role')|capitalize }})
+                        </span>
+                        <a href="/logout" class="text-[10px] font-bold text-rose-500 hover:underline">Log out</a>
+                    </div>
                 </div>
             </div>
 
-            <div class="flex items-center gap-1.5 shrink-0">
-                <select id="langSelect" onchange="changeLanguage(this.value)" class="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-[11px] font-bold px-1.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 focus:outline-none">
-                    <option value="en">🇬🇧 EN</option>
-                    <option value="sw">🇰🇪 SW</option>
-                    <option value="fr">🇫🇷 FR</option>
-                    <option value="es">🇪🇸 ES</option>
-                    <option value="ar">🇸🇦 AR</option>
-                    <option value="zh">🇨🇳 ZH</option>
-                </select>
-
-                <button onclick="toggleTheme()" class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:scale-105 active:scale-95 transition shadow-sm">
+            <!-- Top Action Group -->
+            <div class="flex items-center gap-1.5 sm:gap-2">
+                <button id="directInstallBtn" onclick="triggerNativeInstall()" class="hidden bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 text-xs font-black px-3 py-1.5 rounded-xl shadow-md active:scale-95 transition flex items-center gap-1">
+                    <span>📲</span> Install
+                </button>
+                <button onclick="toggleTheme()" class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:scale-105 active:scale-95 transition">
                     <span id="themeIcon">🌙</span>
                 </button>
                 {% if session.get('role') == 'admin' %}
-                <button onclick="openStaffModal()" title="Manage Staff" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-800 dark:text-slate-200 text-[11px] font-bold px-2.5 py-1.5 rounded-xl transition shadow-sm flex items-center gap-1">
-                    <span>👥</span> <span data-i18n="staff">Staff</span>
+                <button onclick="openStaffModal()" title="Manage Staff" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold px-2.5 py-2 rounded-xl transition flex items-center gap-1">
+                    <span>👥</span> Staff
                 </button>
-                <button onclick="openAddItemModal()" class="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-[11px] font-bold px-2.5 py-1.5 rounded-xl shadow transition flex items-center gap-1">
-                    <span>+</span> <span data-i18n="item">Item</span>
+                <button onclick="openAddItemModal()" class="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold px-3 py-2 rounded-xl shadow transition flex items-center gap-1">
+                    <span>+</span> Item
                 </button>
                 {% endif %}
             </div>
         </div>
     </nav>
 
+    <!-- Notification Toast -->
     <div id="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 opacity-0 pointer-events-none transform -translate-y-2 max-w-sm w-11/12"></div>
 
-    <main class="max-w-3xl mx-auto px-3 sm:px-4 pt-3 pb-28">
+    <main class="max-w-3xl mx-auto px-3 sm:px-4 pt-4 pb-28">
 
+        <!-- SCREEN 1: POS COUNTER -->
         <section id="screen-counter" class="tab-screen">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 mb-3 shadow-sm flex flex-wrap items-center justify-between gap-2 text-xs">
+            
+            <!-- Date Context Selector -->
+            <div class="bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div class="flex items-center gap-2">
-                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider" data-i18n="entry_date">📅 Entry Date:</span>
+                    <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">📅 Entry Date:</span>
                     <input type="date" id="activeSaleDate" value="{{ today_date }}" onchange="onSaleDateChange()" 
-                           class="bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1 text-xs font-bold text-slate-900 dark:text-white">
+                           class="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-2.5 py-1 text-xs font-bold text-slate-900 dark:text-white">
                 </div>
                 <div id="dateNotice" class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                    <span>🟢</span> <span data-i18n="live_mode">Live Mode (Deducts Stock)</span>
+                    <span>🟢</span> Live Mode (Deducts Stock)
                 </div>
             </div>
 
-            <div class="grid grid-cols-3 gap-2 mb-3">
-                <div onclick="openDrilldown('CASH')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02] active:scale-95">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5" data-i18n="cash">💵 Cash</span>
-                    <div class="text-sm sm:text-base font-black text-emerald-600 dark:text-emerald-400 truncate" id="statCash">KES {{ "{:,.0f}".format(today_cash) }}</div>
+            <!-- Stats Bar -->
+            <div class="grid grid-cols-3 gap-2.5 mb-4">
+                <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">💵 Cash</span>
+                    <div class="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400" id="statCash">KES {{ "{:,.0f}".format(today_cash) }}</div>
                 </div>
-                <div onclick="openDrilldown('MPESA')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-green-500 transition hover:scale-[1.02] active:scale-95">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5" data-i18n="mpesa">📲 M-Pesa</span>
-                    <div class="text-sm sm:text-base font-black text-green-600 dark:text-green-400 truncate" id="statMpesa">KES {{ "{:,.0f}".format(today_mpesa) }}</div>
+                <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">📲 M-Pesa</span>
+                    <div class="text-base sm:text-lg font-black text-green-600 dark:text-green-400" id="statMpesa">KES {{ "{:,.0f}".format(today_mpesa) }}</div>
                 </div>
-                <div onclick="openDrilldown('TOTAL')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-indigo-500 transition hover:scale-[1.02] active:scale-95">
-                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5" data-i18n="total_sales">📊 Total Sales</span>
-                    <div class="text-sm sm:text-base font-black text-slate-900 dark:text-white truncate" id="statTotal">KES {{ "{:,.0f}".format(today_cash + today_mpesa) }}</div>
+                <div class="bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 shadow-sm">
+                    <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">📊 Total Sales</span>
+                    <div class="text-base sm:text-lg font-black text-slate-900 dark:text-white" id="statTotal">KES {{ "{:,.0f}".format(today_cash + today_mpesa) }}</div>
                 </div>
             </div>
 
-            <div class="sticky top-[61px] z-30 mb-3">
+            <!-- Fast Search -->
+            <div class="sticky top-[61px] z-30 mb-4">
                 <div class="relative shadow-sm rounded-2xl">
                     <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                     </div>
                     <input type="text" id="counterSearch" oninput="filterList('counterSearch', '.counter-card')" placeholder="Search items..." 
-                           data-i18n-placeholder="search_placeholder"
-                           class="w-full pl-11 pr-10 py-2.5 bg-white dark:bg-slate-900 backdrop-blur-md border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white rounded-2xl placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium shadow-sm">
+                           class="w-full pl-11 pr-10 py-3 bg-white dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-700/80 text-slate-900 dark:text-white rounded-2xl placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium">
                 </div>
             </div>
 
+            <!-- Products List -->
             <div class="space-y-2.5" id="counterList">
                 {% for item in items %}
-                <div class="counter-card bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 hover:border-slate-300 dark:hover:border-slate-700 transition relative shadow-sm" 
+                <div class="counter-card bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800/80 rounded-2xl p-3.5 hover:border-slate-300 dark:hover:border-slate-700 transition relative shadow-sm" 
                      id="item-card-{{ item['item_id'] }}" data-name="{{ item['name'] }}">
                     <div class="flex items-start justify-between gap-2 mb-2">
                         <div>
-                            <h2 class="font-bold text-slate-900 dark:text-white text-sm leading-snug">{{ item['name'] }}</h2>
+                            <h2 class="font-bold text-slate-900 dark:text-white text-sm sm:text-base leading-snug">{{ item['name'] }}</h2>
                             <span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">KES {{ "{:,.1f}".format(item['unit_price']) }}</span>
                         </div>
                         <div class="flex items-center gap-1.5">
-                            <span id="badge-{{ item['item_id'] }}" class="px-2.5 py-0.5 rounded-full text-[11px] font-bold {% if item['current_stock'] <= 0 %}bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-800{% elif item['current_stock'] <= item['reorder_level'] %}bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800{% else %}bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700{% endif %}">
+                            <span id="badge-{{ item['item_id'] }}" class="px-2.5 py-1 rounded-full text-xs font-bold {% if item['current_stock'] <= 0 %}bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-800{% elif item['current_stock'] <= item['reorder_level'] %}bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800{% else %}bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700{% endif %}">
                                 Stock: <span id="stock-val-{{ item['item_id'] }}">{{ item['current_stock'] }}</span>
                             </span>
                         </div>
                     </div>
 
-                    <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/70">
                         <div class="flex items-center gap-1.5">
                             <div class="flex items-center bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-1">
-                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', -1)" class="w-6 h-6 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">-</button>
+                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', -1)" class="w-6 h-7 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">-</button>
                                 <input type="number" id="qty-{{ item['item_id'] }}" value="1" min="1" 
                                        class="w-8 bg-transparent text-center text-xs font-bold text-slate-900 dark:text-white focus:outline-none">
-                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', 1)" class="w-6 h-6 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">+</button>
+                                <button onclick="adjustQty('qty-{{ item['item_id'] }}', 1)" class="w-6 h-7 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white font-bold text-sm">+</button>
                             </div>
 
                             <button onclick="makeSale({{ item['item_id'] }}, 'CASH')" 
-                                    class="bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 hover:scale-105 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
-                                <span>💵</span> <span data-i18n="btn_cash">Cash</span>
+                                    class="bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
+                                <span>💵</span> Cash
                             </button>
                             <button onclick="makeSale({{ item['item_id'] }}, 'MPESA')" 
-                                    class="bg-green-600 hover:bg-green-500 text-white active:scale-95 hover:scale-105 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
-                                <span>📲</span> <span data-i18n="btn_mpesa">M-Pesa</span>
+                                    class="bg-green-600 hover:bg-green-500 text-white active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
+                                <span>📲</span> M-Pesa
                             </button>
                             <button onclick="openSplitModal({{ item['item_id'] }}, '{{ item['name'] }}', {{ item['unit_price'] }})" 
-                                    class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
-                                <span>⚡</span> <span data-i18n="btn_split">Split</span>
+                                    class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800/60 text-amber-800 dark:text-amber-300 active:scale-95 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
+                                <span>⚡</span> Split
                             </button>
                         </div>
 
                         {% if session.get('role') == 'admin' %}
                         <div class="flex items-center gap-1.5">
                             <button onclick="reverseSale({{ item['item_id'] }})" 
-                                    title="Undo sale"
-                                    class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
-                                <span>↩</span> <span data-i18n="btn_return">Return</span>
+                                    title="Undo accidental sale"
+                                    class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 active:scale-95 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
+                                <span>↩</span> Return
                             </button>
                             <input type="number" id="restock-qty-{{ item['item_id'] }}" placeholder="+Qty" min="1" 
                                    class="w-12 px-2 py-1.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-center text-xs text-slate-900 dark:text-white focus:outline-none">
                             <button onclick="makeRestock({{ item['item_id'] }})" 
-                                    class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 hover:scale-105 text-sky-700 dark:text-sky-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 transition flex items-center gap-1">
-                                <span>📦</span> <span data-i18n="btn_in">+ In</span>
+                                    class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-sky-700 dark:text-sky-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 transition flex items-center gap-1">
+                                <span>📦</span> + In
                             </button>
                         </div>
                         {% endif %}
@@ -312,88 +354,61 @@ HTML_TEMPLATE = """
         </section>
 
         {% if session.get('role') == 'admin' %}
+        <!-- SCREEN 2: REPORTS & ANALYTICS (Admin Only) -->
         <section id="screen-reports" class="tab-screen hidden">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm space-y-4">
-                <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                     <div>
                         <h2 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                            <span>📊</span> <span data-i18n="reports_title">Sales & Staff Shifts</span>
+                            <span>📊</span> Sales & Staff Shifts
                         </h2>
-                        <p class="text-xs text-slate-500" data-i18n="reports_subtitle">Historical performance and staff handovers</p>
+                        <p class="text-xs text-slate-500">Historical performance and staff handovers</p>
                     </div>
                     <div class="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
-                        <button onclick="setReportRange('today', this)" class="report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white hover:opacity-90 transition" data-i18n="today">Today</button>
-                        <button onclick="setReportRange('yesterday', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-white transition" data-i18n="yesterday">Yesterday</button>
-                        <button onclick="setReportRange('week', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-white transition" data-i18n="week">7 Days</button>
-                        <button onclick="setReportRange('month', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-white transition" data-i18n="month">30 Days</button>
+                        <button onclick="setReportRange('today', this)" class="report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white">Today</button>
+                        <button onclick="setReportRange('yesterday', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">Yesterday</button>
+                        <button onclick="setReportRange('week', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">7 Days</button>
+                        <button onclick="setReportRange('month', this)" class="report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400">30 Days</button>
                     </div>
                 </div>
 
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div onclick="openDrilldown('TOTAL')" class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-indigo-500 transition hover:scale-[1.02]">
-                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💰</span> <span data-i18n="revenue">Revenue</span></span>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-5">
+                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💰</span> Revenue</span>
                         <div id="repTotalRev" class="text-base font-black text-slate-900 dark:text-white">KES 0</div>
                     </div>
-                    <div onclick="openUnitsSoldModal()" class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02]">
-                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📦</span> <span data-i18n="units_sold">Units Sold</span></span>
+                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📦</span> Units Sold</span>
                         <div id="repTotalUnits" class="text-base font-black text-emerald-600 dark:text-emerald-400">0 pcs</div>
                     </div>
-                    <div onclick="openDrilldown('CASH')" class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02]">
-                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💵</span> <span data-i18n="cash">Cash</span></span>
+                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💵</span> Cash</span>
                         <div id="repCash" class="text-base font-black text-emerald-500">KES 0</div>
                     </div>
-                    <div onclick="openDrilldown('MPESA')" class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-green-500 transition hover:scale-[1.02]">
-                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📲</span> <span data-i18n="mpesa">M-Pesa</span></span>
+                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/80">
+                        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📲</span> M-Pesa</span>
                         <div id="repMpesa" class="text-base font-black text-green-500">KES 0</div>
                     </div>
                 </div>
 
-                <div onclick="openClosingStockModal()" class="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between cursor-pointer hover:border-sky-500 transition hover:scale-[1.01]">
-                    <div class="flex items-center gap-2">
-                        <span class="text-lg">📦</span>
-                        <div>
-                            <div class="font-bold text-xs text-slate-900 dark:text-white" data-i18n="closing_stock_card">Remaining Closing Stock</div>
-                            <div class="text-[10px] text-slate-500" data-i18n="closing_stock_sub">Click to inspect remaining items & valuation</div>
-                        </div>
-                    </div>
-                    <span class="text-xs font-bold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950/80 px-2.5 py-1 rounded-lg border border-sky-200 dark:border-sky-800">View List →</span>
-                </div>
-
-                <div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2.5 text-xs">
-                    <span class="font-bold text-slate-400 uppercase text-[10px]" data-i18n="raw_export">📥 Flexible Range CSV Export:</span>
-                    <div class="grid grid-cols-2 gap-2">
-                        <div>
-                            <label class="block text-[10px] text-slate-400 mb-1" data-i18n="start_date">Start Date</label>
-                            <input type="date" id="exportStart" class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1.5 text-xs text-slate-900 dark:text-white">
-                        </div>
-                        <div>
-                            <label class="block text-[10px] text-slate-400 mb-1" data-i18n="end_date">End Date</label>
-                            <input type="date" id="exportEnd" class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1.5 text-xs text-slate-900 dark:text-white">
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-2 pt-1">
-                        <button onclick="downloadRangeCsv()" class="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-bold py-2 rounded-xl transition shadow-sm hover:scale-[1.02]">Download Range CSV</button>
-                        <a href="/api/reports/export-csv?range=all" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold px-3 py-2 rounded-xl transition text-center" data-i18n="csv_all">All-Time CSV</a>
-                    </div>
-                </div>
-
-                <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                <!-- Staff Performance Breakdown Table -->
+                <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 mb-4">
                     <h3 class="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                        <span>👥</span> <span data-i18n="staff_breakdown">Staff Shift Breakdown</span>
+                        <span>👥</span> Staff Shift Breakdown
                     </h3>
                     <div class="overflow-x-auto">
                         <table class="w-full text-xs text-left">
                             <thead class="text-[10px] uppercase text-slate-400 border-b border-slate-200 dark:border-slate-800">
                                 <tr>
-                                    <th class="py-2" data-i18n="th_staff">Staff</th>
-                                    <th class="py-2" data-i18n="th_role">Role</th>
-                                    <th class="py-2" data-i18n="th_sales">Sales</th>
-                                    <th class="py-2" data-i18n="th_cash">Cash</th>
-                                    <th class="py-2" data-i18n="th_mpesa">M-Pesa</th>
-                                    <th class="py-2 font-bold" data-i18n="th_total">Total</th>
+                                    <th class="py-2">Staff</th>
+                                    <th class="py-2">Role</th>
+                                    <th class="py-2">Sales</th>
+                                    <th class="py-2">Cash</th>
+                                    <th class="py-2">M-Pesa</th>
+                                    <th class="py-2 font-bold">Total</th>
                                 </tr>
                             </thead>
-                            <tbody id="staffTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <tbody id="staffTableBody" class="divide-y divide-slate-100 dark:divide-slate-800/70">
                                 <tr><td colspan="6" class="py-3 text-center text-slate-400">Loading staff shift details...</td></tr>
                             </tbody>
                         </table>
@@ -403,32 +418,28 @@ HTML_TEMPLATE = """
             </div>
         </section>
 
+        <!-- SCREEN 3: PHYSICAL STOCK TAKE (Admin Only) -->
         <section id="screen-audit" class="tab-screen hidden">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
+            <div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
                 <div class="mb-4">
                     <h2 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                        <span>📋</span> <span data-i18n="stock_calibration">Physical Stock Calibration</span>
+                        <span>📋</span> Physical Stock Calibration
                     </h2>
-                    <p class="text-xs text-slate-500" data-i18n="stock_subtitle">Setting counts here overrides your shelf total directly</p>
+                    <p class="text-xs text-slate-500">Setting counts here overrides your shelf total directly</p>
                 </div>
-                <div class="divide-y divide-slate-100 dark:divide-slate-800 max-h-[500px] overflow-y-auto pr-1">
+                <div class="divide-y divide-slate-100 dark:divide-slate-800/80 max-h-[500px] overflow-y-auto pr-1">
                     {% for item in items %}
-                    <div class="audit-row py-3 flex items-center justify-between gap-2">
-                        <div class="flex items-center gap-3">
-                            <div class="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-base shadow-sm shrink-0">
-                                🏷️
-                            </div>
-                            <div>
-                                <div class="font-bold text-slate-900 dark:text-white text-xs leading-snug">{{ item['name'] }}</div>
-                                <span class="text-[11px] text-slate-500"><span data-i18n="current_count">Current Count</span>: <b id="audit-sys-{{ item['item_id'] }}">{{ item['current_stock'] }}</b></span>
-                            </div>
+                    <div class="audit-row py-2.5 flex items-center justify-between gap-2">
+                        <div>
+                            <div class="font-bold text-slate-900 dark:text-white text-xs leading-snug">{{ item['name'] }}</div>
+                            <span class="text-[11px] text-slate-500">Current Count: <b id="audit-sys-{{ item['item_id'] }}">{{ item['current_stock'] }}</b></span>
                         </div>
                         <div class="flex items-center gap-1.5">
                             <input type="number" id="counted-{{ item['item_id'] }}" placeholder="Counted" 
-                                   class="w-16 px-2 py-1.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-center text-xs font-bold text-slate-900 dark:text-white">
+                                   class="w-16 px-2 py-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-center text-xs font-bold text-slate-900 dark:text-white">
                             <button onclick="updateStockTake({{ item['item_id'] }})" 
-                                    class="bg-sky-600 hover:bg-sky-500 hover:scale-105 active:scale-95 text-white font-bold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition">
-                                <span>✓</span> <span data-i18n="btn_set">Set</span>
+                                    class="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs px-2.5 py-1 rounded-lg flex items-center gap-1">
+                                <span>✓</span> Set
                             </button>
                         </div>
                     </div>
@@ -438,361 +449,130 @@ HTML_TEMPLATE = """
         </section>
         {% endif %}
 
-        <section id="screen-profile" class="tab-screen hidden">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 mb-6 shadow-sm space-y-6">
-                
-                <div class="flex items-center gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
-                    <div class="relative group cursor-pointer" onclick="document.getElementById('avatarInput').click()">
-                        <div class="w-16 h-16 rounded-2xl bg-emerald-100 dark:bg-emerald-950/80 border-2 border-emerald-300 dark:border-emerald-800 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-black text-2xl overflow-hidden shadow-inner">
-                            <span id="avatarInitials">{{ session.get('shop_name', 'K')[0]|upper }}</span>
-                            <img id="avatarImage" src="" alt="Logo" class="w-full h-full object-cover hidden">
-                        </div>
-                        <div class="absolute inset-0 bg-black/40 rounded-2xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition text-white text-[10px] font-bold">
-                            Edit
-                        </div>
-                    </div>
-                    <div>
-                        <h2 class="text-base font-black text-slate-900 dark:text-white">{{ session.get('shop_name') }}</h2>
-                        <p class="text-xs text-emerald-600 dark:text-emerald-400 font-bold">@{{ session.get('username') }} • <span class="uppercase text-[10px]">{{ session.get('role') }}</span></p>
-                        <button onclick="document.getElementById('avatarInput').click()" class="text-[11px] font-bold text-indigo-500 hover:underline mt-1 inline-block">Change Store Logo</button>
-                    </div>
-                </div>
-
-                <input type="file" id="avatarInput" accept="image/*" class="hidden" onchange="handleAvatarUpload(event)">
-
-                <div class="space-y-4 text-xs">
-                    <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
-                        <div class="font-bold text-slate-900 dark:text-white flex items-center gap-1.5 uppercase text-[10px] tracking-wider text-slate-400">
-                            <span>⚙️</span> <span data-i18n="settings_header">App Settings & Preferences</span>
-                        </div>
-                        
-                        <div class="flex items-center justify-between py-1.5 border-b border-slate-200 dark:border-slate-800">
-                            <span class="font-semibold text-slate-700 dark:text-slate-300" data-i18n="theme_pref">Theme Mode</span>
-                            <button onclick="toggleTheme()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1">
-                                <span id="themeToggleLabel">Toggle Light/Dark</span>
-                            </button>
-                        </div>
-
-                        <div class="flex items-center justify-between py-1">
-                            <span class="font-semibold text-slate-700 dark:text-slate-300" data-i18n="app_version">App Version</span>
-                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v2.8</span>
-                        </div>
-                    </div>
-
-                    <button onclick="triggerNativeInstall()" class="w-full bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold py-3 px-4 rounded-xl transition flex items-center justify-center gap-2 shadow-md hover:scale-[1.01]">
-                        <span>📲</span> <span data-i18n="install_app_btn">Install App on Phone</span>
-                    </button>
-
-                    <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
-                        <div class="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                            <span>🔗</span> <span data-i18n="share_store">Share Store Link</span>
-                        </div>
-                        <p class="text-[11px] text-slate-500 leading-relaxed" data-i18n="share_desc">Copy your store link or share instantly with customers and friends via WhatsApp.</p>
-                        
-                        <div class="flex items-center gap-2">
-                            <input type="text" id="storeLinkInput" readonly value="https://kiosktrack.pythonanywhere.com" 
-                                   class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-700 dark:text-slate-300 font-mono text-xs focus:outline-none">
-                            <button onclick="copyStoreLink()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-800 dark:text-slate-200 font-bold px-3 py-2 rounded-xl transition shrink-0 flex items-center gap-1 hover:scale-105">
-                                <span>📋</span> <span data-i18n="btn_copy">Copy</span>
-                            </button>
-                        </div>
-
-                        <a href="https://api.whatsapp.com/send?text=Hey!%20Check%20out%20our%20store%20on%20Kiosk%20Track:%20https://kiosktrack.pythonanywhere.com" 
-                           target="_blank" 
-                           class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 shadow-sm hover:scale-[1.01]">
-                            <span>💬</span> <span data-i18n="btn_whatsapp">Share via WhatsApp</span>
-                        </a>
-                    </div>
-
-                    <div class="flex items-center justify-between bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
-                        <span class="text-[11px] font-bold text-slate-500" data-i18n="store_logo">Store Logo / Picture</span>
-                        <button onclick="removeAvatar()" class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 text-rose-600 font-bold px-3 py-1.5 rounded-lg transition border border-rose-200 dark:border-rose-800 hover:scale-105" data-i18n="btn_remove">Remove Logo</button>
-                    </div>
-                </div>
-
-                <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-4">
-                    <a href="/logout" class="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-3 rounded-xl transition text-center shadow-lg flex items-center justify-center gap-2 hover:scale-[1.01]">
-                        <span data-i18n="btn_logout">Log out</span>
-                    </a>
-
-                    <div class="text-center pt-2 space-y-0.5">
-                        <p class="text-[10px] text-slate-400 font-semibold">© 2026 Kiosk Track. All rights reserved.</p>
-                        <p class="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold" data-i18n="footer_empower">Empowering Businesses WorldWide.</p>
-                    </div>
-                </div>
-
-            </div>
-        </section>
-
-        <div id="drilldownModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                    <div>
-                        <h3 class="text-sm font-black text-slate-900 dark:text-white" id="drilldownTitle">Sales Details</h3>
-                        <span class="text-xs text-emerald-600 font-bold" id="drilldownSubTotal">Total: KES 0</span>
-                    </div>
-                    <button onclick="closeDrilldownModal()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
-                </div>
-                
-                <div class="flex items-center gap-2 bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
-                    <span class="font-bold text-slate-400 uppercase text-[10px]">Filter Date:</span>
-                    <input type="date" id="drilldownDate" onchange="fetchDrilldownData()" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1 font-bold">
-                    <button onclick="resetDrilldownDate()" class="text-[10px] font-bold text-indigo-500 hover:underline ml-auto">All Range</button>
-                </div>
-
-                <div class="overflow-y-auto flex-1 pr-1 max-h-72">
-                    <table class="w-full text-xs text-left">
-                        <thead class="text-[10px] uppercase text-slate-400 border-b border-slate-200 dark:border-slate-800">
-                            <tr>
-                                <th class="py-2">Time</th>
-                                <th class="py-2">Product</th>
-                                <th class="py-2">Qty</th>
-                                <th class="py-2">Method</th>
-                                <th class="py-2 font-bold">Amount</th>
-                            </tr>
-                        </thead>
-                        <tbody id="drilldownTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
-                            <tr><td colspan="5" class="py-4 text-center text-slate-400">Loading transactions...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="flex justify-between items-center pt-3 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="downloadDrilldownCsv()" class="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center gap-1">
-                        <span>📥</span> Download CSV
-                    </button>
-                    <button onclick="closeDrilldownModal()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-700 dark:text-slate-200 font-bold text-xs px-4 py-2 rounded-xl transition">
-                        Close
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <div id="unitsSoldModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                    <h3 class="text-sm font-black text-slate-900 dark:text-white">📦 Units Sold Breakdown</h3>
-                    <button onclick="closeUnitsSoldModal()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
-                </div>
-                <div class="overflow-y-auto flex-1 pr-1 max-h-72">
-                    <table class="w-full text-xs text-left">
-                        <thead class="text-[10px] uppercase text-slate-400 border-b border-slate-200 dark:border-slate-800">
-                            <tr>
-                                <th class="py-2">Product Name</th>
-                                <th class="py-2">Units Sold</th>
-                                <th class="py-2 font-bold">Total Sales</th>
-                            </tr>
-                        </thead>
-                        <tbody id="unitsSoldTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
-                            <tr><td colspan="3" class="py-4 text-center text-slate-400">Loading units sold...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div class="flex justify-end pt-3 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeUnitsSoldModal()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-700 dark:text-slate-200 font-bold text-xs px-4 py-2 rounded-xl transition">Close</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="closingStockModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                    <h3 class="text-sm font-black text-slate-900 dark:text-white">📦 Remaining Closing Stock</h3>
-                    <button onclick="closeClosingStockModal()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
-                </div>
-                <div class="overflow-y-auto flex-1 pr-1 max-h-72">
-                    <table class="w-full text-xs text-left">
-                        <thead class="text-[10px] uppercase text-slate-400 border-b border-slate-200 dark:border-slate-800">
-                            <tr>
-                                <th class="py-2">Product Name</th>
-                                <th class="py-2">In Stock</th>
-                                <th class="py-2 font-bold">Valuation (KES)</th>
-                            </tr>
-                        </thead>
-                        <tbody id="closingStockTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
-                            <tr><td colspan="3" class="py-4 text-center text-slate-400">Loading closing stock...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div class="flex justify-between items-center pt-3 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="downloadClosingStockCsv()" class="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition">📥 Download CSV</button>
-                    <button onclick="closeClosingStockModal()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-700 dark:text-slate-200 font-bold text-xs px-4 py-2 rounded-xl transition">Close</button>
-                </div>
-            </div>
-        </div>
-
+        <!-- STAFF MANAGEMENT MODAL (Admin Only) -->
         <div id="staffModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                    <h3 class="text-sm font-bold text-slate-900 dark:text-white" data-i18n="manage_cashiers">Manage Cashiers</h3>
-                    <button onclick="closeStaffModal()" class="text-slate-400 text-lg font-bold">&times;</button>
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                    <h3 class="text-sm font-bold text-slate-900 dark:text-white">Manage Cashiers</h3>
+                    <button onclick="closeStaffModal()" class="text-slate-400 text-lg">&times;</button>
                 </div>
+                
+                <!-- Existing Staff List with Password Reset -->
                 <div class="space-y-2 max-h-48 overflow-y-auto pr-1">
-                    <h4 class="text-[10px] font-bold uppercase text-slate-400" data-i18n="current_team">Current Team</h4>
-                    <div id="existingStaffList" class="divide-y divide-slate-100 dark:divide-slate-800 text-xs"></div>
+                    <h4 class="text-[10px] font-bold uppercase text-slate-400">Current Team</h4>
+                    <div id="existingStaffList" class="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                        <!-- Loaded dynamically -->
+                    </div>
                 </div>
+
                 <div class="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2 text-xs">
-                    <h4 class="text-[10px] font-bold uppercase text-slate-400" data-i18n="create_cashier">Create New Cashier</h4>
+                    <h4 class="text-[10px] font-bold uppercase text-slate-400">Create New Cashier</h4>
                     <div>
-                        <label class="block font-semibold mb-1" data-i18n="username">Username</label>
-                        <input type="text" id="staffUsername" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                        <label class="block font-semibold mb-1">Username</label>
+                        <input type="text" id="staffUsername" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                     </div>
                     <div>
-                        <label class="block font-semibold mb-1" data-i18n="password_pin">Password / PIN</label>
-                        <input type="password" id="staffPassword" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                        <label class="block font-semibold mb-1">Password / PIN</label>
+                        <input type="password" id="staffPassword" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                     </div>
                 </div>
                 <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeStaffModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_close">Close</button>
-                    <button onclick="submitNewStaff()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_create">Create Cashier</button>
+                    <button onclick="closeStaffModal()" class="px-3 py-1.5 text-xs text-slate-500">Close</button>
+                    <button onclick="submitNewStaff()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-1.5 rounded-xl">Create Cashier</button>
                 </div>
             </div>
         </div>
 
+        <!-- ADD ITEM MODAL -->
         <div id="addItemModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-                    <h3 class="text-sm font-bold text-slate-900 dark:text-white" data-i18n="add_product">Add New Product</h3>
-                    <button onclick="closeAddItemModal()" class="text-slate-400 text-lg font-bold">&times;</button>
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
+                    <h3 class="text-sm font-bold text-slate-900 dark:text-white">Add New Product</h3>
+                    <button onclick="closeAddItemModal()" class="text-slate-400 text-lg">&times;</button>
                 </div>
                 <div class="space-y-3 text-xs">
                     <div>
-                        <label class="block font-semibold mb-1" data-i18n="product_name">Product Name</label>
-                        <input type="text" id="newItemName" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                        <label class="block font-semibold mb-1">Product Name</label>
+                        <input type="text" id="newItemName" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                     </div>
                     <div class="grid grid-cols-2 gap-2">
                         <div>
-                            <label class="block font-semibold mb-1" data-i18n="selling_price">Selling Price (KES)</label>
-                            <input type="number" id="newItemPrice" step="0.5" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                            <label class="block font-semibold mb-1">Selling Price (KES)</label>
+                            <input type="number" id="newItemPrice" step="0.5" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                         </div>
                         <div>
-                            <label class="block font-semibold mb-1" data-i18n="initial_stock">Initial Stock</label>
-                            <input type="number" id="newItemStock" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                            <label class="block font-semibold mb-1">Initial Stock</label>
+                            <input type="number" id="newItemStock" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                         </div>
                     </div>
                 </div>
                 <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeAddItemModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_cancel">Cancel</button>
-                    <button onclick="submitNewItem()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_save">Save</button>
+                    <button onclick="closeAddItemModal()" class="px-3 py-1.5 text-xs text-slate-500">Cancel</button>
+                    <button onclick="submitNewItem()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-1.5 rounded-xl">Save</button>
                 </div>
             </div>
         </div>
 
+        <!-- SPLIT PAYMENT MODAL -->
         <div id="splitModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
-                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
                     <div>
-                        <h3 class="text-sm font-bold text-slate-900 dark:text-white" id="splitItemName">Item Name</h3>
+                        <h3 class="text-sm font-bold" id="splitItemName">Item Name</h3>
                         <span class="text-xs text-emerald-600 font-bold" id="splitTotalDisplay">Total: KES 0</span>
                     </div>
-                    <button onclick="closeSplitModal()" class="text-slate-400 text-lg font-bold">&times;</button>
+                    <button onclick="closeSplitModal()" class="text-slate-400 text-lg">&times;</button>
                 </div>
                 <div class="space-y-3 text-xs">
                     <div>
-                        <label class="block font-semibold mb-1" data-i18n="cash_kes">Cash (KES)</label>
-                        <input type="number" id="splitCashInput" oninput="autoCalculateMpesa()" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                        <label class="block font-semibold mb-1">Cash (KES)</label>
+                        <input type="number" id="splitCashInput" oninput="autoCalculateMpesa()" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                     </div>
                     <div>
-                        <label class="block font-semibold mb-1" data-i18n="mpesa_kes">M-Pesa (KES)</label>
-                        <input type="number" id="splitMpesaInput" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                        <label class="block font-semibold mb-1">M-Pesa (KES)</label>
+                        <input type="number" id="splitMpesaInput" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2">
                     </div>
                 </div>
                 <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeSplitModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_cancel">Cancel</button>
-                    <button onclick="submitSplitSale()" class="bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_complete">Complete Sale</button>
+                    <button onclick="closeSplitModal()" class="px-3 py-1.5 text-xs text-slate-500">Cancel</button>
+                    <button onclick="submitSplitSale()" class="bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl">Complete Sale</button>
                 </div>
             </div>
         </div>
 
     </main>
 
-    <nav class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800 pb-[env(safe-area-inset-bottom)] shadow-lg">
-        <div class="max-w-md mx-auto grid {% if session.get('role') == 'admin' %}grid-cols-4{% else %}grid-cols-2{% endif %} h-16">
-            <button onclick="switchTab('counter', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400">
-                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800 shadow-sm tab-indicator">
+    <!-- Bottom Navigation -->
+    <nav class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800/90 pb-[env(safe-area-inset-bottom)]">
+        <div class="max-w-md mx-auto grid {% if session.get('role') == 'admin' %}grid-cols-3{% else %}grid-cols-1{% endif %} h-16">
+            <button onclick="switchTab('counter', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600">
+                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800/60 shadow-sm tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
                 </div>
-                <span class="text-[11px] font-bold tracking-tight" data-i18n="nav_counter">Counter</span>
+                <span class="text-[11px] font-bold tracking-tight">Counter</span>
             </button>
             {% if session.get('role') == 'admin' %}
-            <button onclick="switchTab('reports', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition">
+            <button onclick="switchTab('reports', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400">
                 <div class="w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
                 </div>
-                <span class="text-[11px] font-bold tracking-tight" data-i18n="nav_reports">Reports</span>
+                <span class="text-[11px] font-bold tracking-tight">Reports</span>
             </button>
-            <button onclick="switchTab('audit', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition">
+            <button onclick="switchTab('audit', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400">
                 <div class="w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
                 </div>
-                <span class="text-[11px] font-bold tracking-tight" data-i18n="nav_stocktake">Stock Take</span>
+                <span class="text-[11px] font-bold tracking-tight">Stock Take</span>
             </button>
             {% endif %}
-            <button onclick="switchTab('profile', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition">
-                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-                </div>
-                <span class="text-[11px] font-bold tracking-tight" data-i18n="nav_profile">Profile</span>
-            </button>
         </div>
     </nav>
 
     <script>
         const TODAY_STR = "{{ today_date }}";
+
         let deferredPrompt = null;
-
-        const translations = {
-            en: { staff: "Staff", item: "Item", entry_date: "📅 Entry Date:", live_mode: "Live Mode (Deducts Stock)", cash: "💵 Cash", mpesa: "📲 M-Pesa", total_sales: "📊 Total Sales", search_placeholder: "Search items...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Split", btn_return: "Return", btn_in: "+ In", reports_title: "Sales & Staff Shifts", reports_subtitle: "Historical performance and staff handovers", today: "Today", yesterday: "Yesterday", week: "7 Days", month: "30 Days", revenue: "Revenue", units_sold: "Units Sold", raw_export: "📥 Flexible Range CSV Export:", csv_year: "Last Year CSV", csv_all: "All-Time CSV", staff_breakdown: "Staff Shift Breakdown", th_staff: "Staff", th_role: "Role", th_sales: "Sales", th_cash: "Cash", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Physical Stock Calibration", stock_subtitle: "Setting counts here overrides your shelf total directly", current_count: "Current Count", btn_set: "Set", store_logo: "Store Logo / Picture", btn_upload: "Upload", btn_remove: "Remove Logo", share_store: "Share Store Link", share_desc: "Copy your store link or share instantly with customers and friends via WhatsApp.", btn_copy: "Copy", btn_whatsapp: "Share via WhatsApp", app_version: "App Version", btn_close: "Close", btn_logout: "Log out", manage_cashiers: "Manage Cashiers", current_team: "Current Team", create_cashier: "Create New Cashier", username: "Username", password_pin: "Password / PIN", btn_create: "Create Cashier", add_product: "Add New Product", product_name: "Product Name", selling_price: "Selling Price (KES)", initial_stock: "Initial Stock", btn_cancel: "Cancel", btn_save: "Save", cash_kes: "Cash (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Complete Sale", nav_counter: "Counter", nav_reports: "Reports", nav_stocktake: "Stock Take", nav_profile: "Profile", install_app_btn: "Install App on Phone", closing_stock_card: "Remaining Closing Stock", closing_stock_sub: "Click to inspect remaining items & valuation", start_date: "Start Date", end_date: "End Date", settings_header: "App Settings & Preferences", theme_pref: "Theme Mode", footer_empower: "Empowering Businesses WorldWide." },
-            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi", footer_empower: "Kuwezesha Biashara Duniani Kote." },
-            fr: { staff: "Personnel", item: "Article", entry_date: "📅 Date:", live_mode: "Mode en direct", cash: "💵 Espèces", mpesa: "📲 M-Pesa", total_sales: "📊 Ventes Totales", search_placeholder: "Rechercher...", btn_cash: "Espèces", btn_mpesa: "M-Pesa", btn_split: "Diviser", btn_return: "Retour", btn_in: "+ Entrée", reports_title: "Rapports", reports_subtitle: "Performance historique", today: "Aujourd'hui", yesterday: "Hier", week: "7 Jours", month: "30 Jours", revenue: "Revenu", units_sold: "Unités vendues", raw_export: "📥 Exporter Données:", csv_year: "CSV An Dernier", csv_all: "CSV Tout", staff_breakdown: "Détail du Personnel", th_staff: "Personnel", th_role: "Rôle", th_sales: "Ventes", th_cash: "Espèces", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibration Stock", stock_subtitle: "Modifie directement le stock", current_count: "Stock Actuel", btn_set: "Définir", store_logo: "Logo du Magasin", btn_upload: "Télécharger", btn_remove: "Supprimer Logo", share_store: "Partager le lien", share_desc: "Copiez le lien ou partagez avec vos clients via WhatsApp.", btn_copy: "Copier", btn_whatsapp: "Partager via WhatsApp", app_version: "Version", btn_close: "Fermer", btn_logout: "Déconnexion", manage_cashiers: "Gérer Caissiers", current_team: "Équipe", create_cashier: "Créer Caissier", username: "Nom d'utilisateur", password_pin: "Mot de passe", btn_create: "Créer", add_product: "Ajouter Article", product_name: "Nom", selling_price: "Prix (KES)", initial_stock: "Stock Initial", btn_cancel: "Annuler", btn_save: "Enregistrer", cash_kes: "Espèces (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Valider", nav_counter: "Comptoir", nav_reports: "Rapports", nav_stocktake: "Inventaire", nav_profile: "Profil", install_app_btn: "Installer l'application", closing_stock_card: "Stock de Clôture", closing_stock_sub: "Inspecter le stock restant", start_date: "Date Début", end_date: "Date Fin", settings_header: "Paramètres de l'application", theme_pref: "Mode Thème", footer_empower: "Autonomiser les entreprises du monde entier." },
-            es: { staff: "Personal", item: "Artículo", entry_date: "📅 Fecha:", live_mode: "Modo en Vivo", cash: "💵 Efectivo", mpesa: "📲 M-Pesa", total_sales: "📊 Ventas Totales", search_placeholder: "Buscar...", btn_cash: "Efectivo", btn_mpesa: "M-Pesa", btn_split: "Dividir", btn_return: "Devolver", btn_in: "+ Entrar", reports_title: "Reportes", reports_subtitle: "Rendimiento histórico", today: "Hoy", yesterday: "Ayer", week: "7 Días", month: "30 Días", revenue: "Ingresos", units_sold: "Unidades", raw_export: "📥 Exportar Datos:", csv_year: "CSV Año Pasado", csv_all: "CSV Todo", staff_breakdown: "Desglose del Personal", th_staff: "Personal", th_role: "Rol", th_sales: "Ventas", th_cash: "Efectivo", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibración de Stock", stock_subtitle: "Modifica el stock directamente", current_count: "Conteo Actual", btn_set: "Fijar", store_logo: "Logo de Tienda", btn_upload: "Subir", btn_remove: "Eliminar Logo", share_store: "Compartir Enlace", share_desc: "Copia el enlace o compártelo con tus clientes por WhatsApp.", btn_copy: "Copiar", btn_whatsapp: "Compartir por WhatsApp", app_version: "Versión", btn_close: "Cerrar", btn_logout: "Cerrar Sesión", manage_cashiers: "Gestionar Cajeros", current_team: "Equipo", create_cashier: "Crear Cajero", username: "Usuario", password_pin: "Contraseña", btn_create: "Crear", add_product: "Agregar Producto", product_name: "Nombre", selling_price: "Precio (KES)", initial_stock: "Stock Inicial", btn_cancel: "Cancelar", btn_save: "Guardar", cash_kes: "Efectivo (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Completar Venta", nav_counter: "Mostrador", nav_reports: "Reportes", nav_stocktake: "Inventario", nav_profile: "Perfil", install_app_btn: "Instalar Aplicación", closing_stock_card: "Stock Restante", closing_stock_sub: "Ver inventario actual", start_date: "Fecha Inicio", end_date: "Fecha Fin", settings_header: "Configuración de la App", theme_pref: "Modo de Tema", footer_empower: "Empoderando negocios en todo el mundo." },
-            ar: { staff: "الموظفين", item: "صنف", entry_date: "📅 تاريخ:", live_mode: "الوضع المباشر", cash: "💵 نقدي", mpesa: "📲 إمبيسا", total_sales: "📊 إجمالي المبيعات", search_placeholder: "بحث عن أصناف...", btn_cash: "نقدي", btn_mpesa: "إمبيسا", btn_split: "تقسيم", btn_return: "إرجاع", btn_in: "+ إدخال", reports_title: "التقارير", reports_subtitle: "الأداء التاريخي", today: "اليوم", yesterday: "أمس", week: "7 أيام", month: "30 يوم", revenue: "الإيرادات", units_sold: "الوحدات المباعة", raw_export: "📥 تصدير البيانات:", csv_year: "CSV العام الماضي", csv_all: "CSV الكل", staff_breakdown: "تفصيل ورديات الموظفين", th_staff: "الموظف", th_role: "الدور", th_sales: "المبيعات", th_cash: "نقدي", th_mpesa: "إمبيسا", th_total: "المجموع", stock_calibration: "مراجعة المخزون", stock_subtitle: "تعديل رصيد الرف مباشرة", current_count: "العدد الحالي", btn_set: "تعيين", store_logo: "شعار المتجر", btn_upload: "رفع", btn_remove: "إزالة الشعار", share_store: "مشاركة رابط المتجر", share_desc: "انسخ الرابط أو شاركه مع العملاء والأصدقاء عبر واتساب.", btn_copy: "نسخ", btn_whatsapp: "مشاركة عبر واتساب", app_version: "إصدار التطبيق", btn_close: "إغلاق", btn_logout: "تسجيل الخروج", manage_cashiers: "إدارة الكاشير", current_team: "الفريق الحالي", create_cashier: "إنشاء كاشير", username: "اسم المستخدم", password_pin: "كلمة المرور / الرمز", btn_create: "إنشاء", add_product: "إضافة منتج", product_name: "اسم المنتج", selling_price: "سعر البيع", initial_stock: "المخزون الأولي", btn_cancel: "إلغاء", btn_save: "حفظ", cash_kes: "نقدي", mpesa_kes: "إمبيسا", btn_complete: "إتمام البيع", nav_counter: "العداد", nav_reports: "التقارير", nav_stocktake: "جرد المخزون", nav_profile: "الملف الشخصي", install_app_btn: "تثبيت التطبيق على الهاتف", closing_stock_card: "المخزون المتبقي", closing_stock_sub: "عرض تقييم المخزون", start_date: "تاريخ البدء", end_date: "تاريخ الانتهاء", settings_header: "إعدادات التطبيق", theme_pref: "وضع المظهر", footer_empower: "تمكين الشركات في جميع أنحاء العالم." },
-            zh: { staff: "员工", item: "商品", entry_date: "📅 日期：", live_mode: "实时模式", cash: "💵 现金", mpesa: "📲 移动支付", total_sales: "📊 总销售额", search_placeholder: "搜索商品...", btn_cash: "现金", btn_mpesa: "移动支付", btn_split: "拆分", btn_return: "退货", btn_in: "+ 入库", reports_title: "销售与班次", reports_subtitle: "历史业绩", today: "今天", yesterday: "昨天", week: "7天", month: "30天", revenue: "收入", units_sold: "销售数量", raw_export: "📥 导出原始数据:", csv_year: "去年CSV", csv_all: "全部CSV", staff_breakdown: "员工班次明细", th_staff: "员工", th_role: "角色", th_sales: "销售", th_cash: "现金", th_mpesa: "移动支付", th_total: "总计", stock_calibration: "库存校准", stock_subtitle: "直接覆盖货架库存", current_count: "当前盘点", btn_set: "设置", store_logo: "店铺标志", btn_upload: "上传", btn_remove: "移除Logo", share_store: "分享店铺链接", share_desc: "复制您的店铺链接，或通过WhatsApp快速分享给客户和好友。", btn_copy: "复制", btn_whatsapp: "通过WhatsApp分享", app_version: "应用版本", btn_close: "关闭", btn_logout: "退出登录", manage_cashiers: "管理收银员", current_team: "当前团队", create_cashier: "新建收银员", username: "用户名", password_pin: "密码/PIN", btn_create: "创建", add_product: "添加新商品", product_name: "商品名称", selling_price: "售价", initial_stock: "初始库存", btn_cancel: "取消", btn_save: "保存", cash_kes: "现金", mpesa_kes: "移动支付", btn_complete: "完成销售", nav_counter: "收银台", nav_reports: "报表", nav_stocktake: "盘点", nav_profile: "个人资料", install_app_btn: "在手机上安装应用", closing_stock_card: "剩余库存", closing_stock_sub: "查看剩余库存及估值", start_date: "开始日期", end_date: "结束日期", settings_header: "应用设置", theme_pref: "主题模式", footer_empower: "赋能全球企业。" }
-        };
-
-        function changeLanguage(lang) {
-            localStorage.setItem('kiosk_lang', lang);
-            const dict = translations[lang] || translations.en;
-            document.querySelectorAll('[data-i18n]').forEach(el => {
-                const key = el.getAttribute('data-i18n');
-                if (dict[key]) el.innerText = dict[key];
-            });
-            document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
-                const key = el.getAttribute('data-i18n-placeholder');
-                if (dict[key]) el.placeholder = dict[key];
-            });
-        }
-
-        window.addEventListener('DOMContentLoaded', () => {
-            const savedLang = localStorage.getItem('kiosk_lang') || 'en';
-            const langEl = document.getElementById('langSelect');
-            if (langEl) {
-                langEl.value = savedLang;
-                changeLanguage(savedLang);
-            }
-
-            const savedTheme = localStorage.getItem('kiosk_theme');
-            const themeIcon = document.getElementById('themeIcon');
-            if (savedTheme === 'light') {
-                document.documentElement.classList.remove('dark');
-                if (themeIcon) themeIcon.innerText = '☀️';
-            } else {
-                document.documentElement.classList.add('dark');
-                if (themeIcon) themeIcon.innerText = '🌙';
-            }
-
-            setTimeout(fetchServerLogo, 100);
-        });
-
-        async function fetchServerLogo() {
-            try {
-                const res = await fetch('/api/store/logo');
-                const d = await res.json();
-                if (d.logo) {
-                    applyAvatar(d.logo);
-                }
-            } catch (err) { console.error(err); }
-        }
+        const installBtn = document.getElementById('directInstallBtn');
 
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/sw.js', { scope: '/' })
@@ -802,6 +582,7 @@ HTML_TEMPLATE = """
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
             deferredPrompt = e;
+            if (installBtn) installBtn.classList.remove('hidden');
         });
 
         async function triggerNativeInstall() {
@@ -811,20 +592,16 @@ HTML_TEMPLATE = """
             }
             deferredPrompt.prompt();
             const { outcome } = await deferredPrompt.userChoice;
+            if (outcome === 'accepted' && installBtn) {
+                installBtn.classList.add('hidden');
+            }
             deferredPrompt = null;
         }
 
         window.addEventListener('appinstalled', () => {
+            if (installBtn) installBtn.classList.add('hidden');
             showToast("Kiosk Track installed successfully!");
         });
-
-        function copyStoreLink() {
-            const input = document.getElementById('storeLinkInput');
-            input.select();
-            input.setSelectionRange(0, 99999);
-            navigator.clipboard.writeText(input.value);
-            showToast("Store link copied to clipboard!");
-        }
 
         function onSaleDateChange() {
             const selected = document.getElementById('activeSaleDate').value;
@@ -839,26 +616,12 @@ HTML_TEMPLATE = """
         }
 
         function toggleTheme() {
-            const isDark = document.documentElement.classList.toggle('dark');
-            const themeIcon = document.getElementById('themeIcon');
-            if (themeIcon) {
-                themeIcon.innerText = isDark ? '🌙' : '☀️';
-            }
-            localStorage.setItem('kiosk_theme', isDark ? 'dark' : 'light');
+            document.documentElement.classList.toggle('dark');
         }
 
         function switchTab(name, btn) {
             document.querySelectorAll('.tab-screen').forEach(s => s.classList.add('hidden'));
             document.getElementById(`screen-${name}`)?.classList.remove('hidden');
-            document.querySelectorAll('.nav-tab').forEach(t => {
-                t.className = "nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition";
-                const indicator = t.querySelector('.tab-indicator');
-                if(indicator) indicator.className = "w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator";
-            });
-            btn.className = "nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400";
-            const activeIndicator = btn.querySelector('.tab-indicator');
-            if(activeIndicator) activeIndicator.className = "w-10 h-7 rounded-full flex items-center justify-center bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800 shadow-sm tab-indicator";
-
             if(name === 'reports') loadReports('today');
         }
 
@@ -998,7 +761,7 @@ HTML_TEMPLATE = """
 
         function setReportRange(range, btn) {
             document.querySelectorAll('.report-range-btn').forEach(b => {
-                b.className = 'report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-white transition';
+                b.className = 'report-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400';
             });
             btn.className = 'report-range-btn px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white';
             loadReports(range);
@@ -1029,180 +792,25 @@ HTML_TEMPLATE = """
             }
         }
 
-        let activeDrillMode = 'TOTAL';
-        function openDrilldown(mode) {
-            activeDrillMode = mode;
-            const titles = { CASH: '💵 Cash Transactions', MPESA: '📲 M-Pesa Transactions', TOTAL: '📊 All Sales Transactions' };
-            document.getElementById('drilldownTitle').innerText = titles[mode] || 'Sales Breakdown';
-            document.getElementById('drilldownDate').value = '';
-            document.getElementById('drilldownModal').classList.remove('hidden');
-            fetchDrilldownData();
-        }
-        function closeDrilldownModal() { document.getElementById('drilldownModal').classList.add('hidden'); }
-        function resetDrilldownDate() {
-            document.getElementById('drilldownDate').value = '';
-            fetchDrilldownData();
-        }
-
-        async function fetchDrilldownData() {
-            const dateVal = document.getElementById('drilldownDate').value;
-            let url = `/api/transactions/drilldown?mode=${activeDrillMode}`;
-            if (dateVal) url += `&date=${dateVal}`;
-
-            const res = await fetch(url);
-            const d = await res.json();
-            const totalVal = parseFloat(d.total_amount) || 0;
-            document.getElementById('drilldownSubTotal').innerText = `Total: KES ${Math.round(totalVal).toLocaleString()}`;
-            
-            const tbody = document.getElementById('drilldownTableBody');
-            if (d.transactions && d.transactions.length > 0) {
-                tbody.innerHTML = d.transactions.map(tx => `
-                    <tr>
-                        <td class="py-2 font-mono text-[11px] text-slate-500">${tx.timestamp}</td>
-                        <td class="py-2 font-bold">${tx.product_name}</td>
-                        <td class="py-2">${tx.quantity}</td>
-                        <td class="py-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${tx.payment_method === 'CASH' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400'}">${tx.payment_method}</span></td>
-                        <td class="py-2 font-black font-mono">KES ${Math.round(parseFloat(tx.total_amount) || 0).toLocaleString()}</td>
-                    </tr>
-                `).join('');
-            } else {
-                tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-slate-400">No transactions found for this selection</td></tr>`;
-            }
-        }
-
-        function downloadDrilldownCsv() {
-            const dateVal = document.getElementById('drilldownDate').value;
-            let url = `/api/transactions/drilldown-csv?mode=${activeDrillMode}`;
-            if (dateVal) url += `&date=${dateVal}`;
-            window.location.href = url;
-        }
-
-        async function openUnitsSoldModal() {
-            document.getElementById('unitsSoldModal').classList.remove('hidden');
-            const res = await fetch('/api/reports/units-sold');
-            const d = await res.json();
-            const tbody = document.getElementById('unitsSoldTableBody');
-            if (d.units && d.units.length > 0) {
-                tbody.innerHTML = d.units.map(u => `
-                    <tr>
-                        <td class="py-2.5 font-bold">${u.product_name}</td>
-                        <td class="py-2.5 font-mono">${u.total_units} pcs</td>
-                        <td class="py-2.5 font-black font-mono text-emerald-600 dark:text-emerald-400">KES ${Math.round(u.total_sales).toLocaleString()}</td>
-                    </tr>
-                `).join('');
-            } else {
-                tbody.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-slate-400">No units sold recorded</td></tr>`;
-            }
-        }
-        function closeUnitsSoldModal() { document.getElementById('unitsSoldModal').classList.add('hidden'); }
-
-        async function openClosingStockModal() {
-            document.getElementById('closingStockModal').classList.remove('hidden');
-            const res = await fetch('/api/reports/closing-stock');
-            const d = await res.json();
-            const tbody = document.getElementById('closingStockTableBody');
-            if (d.stock && d.stock.length > 0) {
-                tbody.innerHTML = d.stock.map(s => `
-                    <tr>
-                        <td class="py-2.5 font-bold">${s.product_name}</td>
-                        <td class="py-2.5 font-mono">${s.current_stock} pcs</td>
-                        <td class="py-2.5 font-black font-mono text-sky-600 dark:text-sky-400">KES ${Math.round(s.valuation).toLocaleString()}</td>
-                    </tr>
-                `).join('');
-            } else {
-                tbody.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-slate-400">No stock items available</td></tr>`;
-            }
-        }
-        function closeClosingStockModal() { document.getElementById('closingStockModal').classList.add('hidden'); }
-        function downloadClosingStockCsv() { window.location.href = '/api/reports/closing-stock-csv'; }
-
-        function downloadRangeCsv() {
-            const start = document.getElementById('exportStart').value;
-            const end = document.getElementById('exportEnd').value;
-            if(!start || !end) {
-                showToast("Please select both start and end dates", false);
-                return;
-            }
-            window.location.href = `/api/reports/export-csv?start=${start}&end=${end}`;
-        }
-
-        async function handleAvatarUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = async function(e) {
-                const base64String = e.target.result;
-                await fetch('/api/store/logo', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ logo: base64String })
-                });
-                applyAvatar(base64String);
-                showToast("Store logo updated & synced!");
-            };
-            reader.readAsDataURL(file);
-        }
-
-        function applyAvatar(src) {
-            ['navAvatarImage', 'avatarImage'].forEach(id => {
-                const img = document.getElementById(id);
-                if(img) { img.src = src; img.classList.remove('hidden'); }
-            });
-            ['navAvatarInitials', 'avatarInitials'].forEach(id => {
-                const init = document.getElementById(id);
-                if(init) { init.classList.add('hidden'); }
-            });
-        }
-
-        async function removeAvatar() {
-            await fetch('/api/store/logo', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ logo: '' })
-            });
-            ['navAvatarImage', 'avatarImage'].forEach(id => {
-                const img = document.getElementById(id);
-                if(img) { img.src = ''; img.classList.add('hidden'); }
-            });
-            ['navAvatarInitials', 'avatarInitials'].forEach(id => {
-                const init = document.getElementById(id);
-                if(init) { init.classList.remove('hidden'); }
-            });
-            showToast("Store logo removed");
-        }
-
         async function openStaffModal() {
             document.getElementById('staffModal').classList.remove('hidden');
+            const res = await fetch('/api/staff/list');
+            const data = await res.json();
             const listEl = document.getElementById('existingStaffList');
-            listEl.innerHTML = `<div class="py-3 text-center text-slate-400">Loading team...</div>`;
-            try {
-                const res = await fetch('/api/staff/list', { credentials: 'same-origin' });
-                if (!res.ok) {
-                    let msg = `Request failed (${res.status})`;
-                    if (res.status === 401) msg = "Session expired — please log out and log in again.";
-                    if (res.status === 403) msg = "Your session is not recognised as admin. Log out and log in again.";
-                    listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">${msg}</div>`;
-                    return;
-                }
-                const data = await res.json();
-                const users = Array.isArray(data) ? data : (data.users || []);
-                if (users.length === 0) {
-                    listEl.innerHTML = `<div class="py-3 text-center text-slate-400">No cashiers found. Create one below!</div>`;
-                    return;
-                }
-                listEl.innerHTML = users.map(u => `
-                    <div class="py-2.5 flex items-center justify-between">
+            if (data.users && data.users.length > 0) {
+                listEl.innerHTML = data.users.map(u => `
+                    <div class="py-2 flex items-center justify-between">
                         <div>
-                            <span class="font-bold text-slate-900 dark:text-white">@${u.username}</span>
-                            <span class="text-[10px] text-slate-400 uppercase font-semibold">(${u.role})</span>
+                            <span class="font-bold">@${u.username}</span> 
+                            <span class="text-[10px] text-slate-400 uppercase">(${u.role})</span>
                         </div>
                         ${u.role !== 'admin' ? `
-                            <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">Reset Password</button>
+                            <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">
+                                Reset Password
+                            </button>
                         ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
                     </div>
                 `).join('');
-            } catch (err) {
-                listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">Could not reach server: ${err.message}</div>`;
             }
         }
 
@@ -1271,23 +879,18 @@ AUTH_TEMPLATE = """
     <title>Login - Kiosk Track</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen flex items-center justify-center p-4">
-    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-2xl space-y-4">
-        <div class="text-center space-y-2">
-            <img src="/static/app_icon.svg" alt="Logo" class="w-14 h-14 mx-auto rounded-2xl shadow-md">
-            <div>
-                <h1 class="text-xl font-black text-slate-900 dark:text-white tracking-tight">Kiosk Track</h1>
-                <p class="text-xs text-slate-500 font-medium">Cloud Inventory & Point of Sale</p>
-            </div>
-        </div>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-2xl">
+        <h1 class="text-xl font-black text-center mb-1 text-white tracking-tight">Kiosk Track</h1>
+        <p class="text-xs text-slate-400 text-center mb-6">Cloud Inventory & Point of Sale</p>
 
         {% if error %}
-        <div class="bg-rose-100 dark:bg-rose-950/80 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs p-3 rounded-xl text-center font-semibold">
+        <div class="bg-rose-950/80 border border-rose-800 text-rose-300 text-xs p-3 rounded-xl mb-4 text-center font-semibold">
             {{ error }}
         </div>
         {% endif %}
         {% if message %}
-        <div class="bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs p-3 rounded-xl text-center font-semibold">
+        <div class="bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs p-3 rounded-xl mb-4 text-center font-semibold">
             {{ message }}
         </div>
         {% endif %}
@@ -1295,58 +898,58 @@ AUTH_TEMPLATE = """
         <form method="POST" action="{{ action_url }}" class="space-y-3.5 text-xs">
             {% if mode == 'register' %}
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Shop Name</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Shop Name</label>
                 <input type="text" name="shop_name" required placeholder="e.g. Westlands Mini Mart" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Your Mobile Phone</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Your Mobile Phone</label>
                 <input type="tel" name="phone" required placeholder="e.g. 0712345678" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Admin Username</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Admin Username</label>
                 <input type="text" name="username" required placeholder="Enter username" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
                 <input type="password" name="password" required placeholder="••••••••" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN (Used if you forget password)</label>
                 <input type="password" name="recovery_pin" maxlength="4" required placeholder="4-digit PIN (e.g. 1997)" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
 
             {% elif mode == 'forgot' %}
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Registered Phone Number</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Registered Phone Number</label>
                 <input type="tel" name="phone" required placeholder="e.g. 0712345678" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">4-Digit Recovery PIN</label>
                 <input type="password" name="recovery_pin" maxlength="4" required placeholder="••••" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">New Password</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">New Password</label>
                 <input type="password" name="new_password" required placeholder="Enter new password" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
 
             {% else %}
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Username or Phone</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Username or Phone</label>
                 <input type="text" name="login_identifier" required placeholder="Enter username or phone" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             <div>
-                <label class="block text-slate-500 dark:text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
+                <label class="block text-slate-400 font-bold mb-1 uppercase text-[10px]">Password</label>
                 <input type="password" name="password" required placeholder="••••••••" 
-                       class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2.5 text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold">
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-semibold">
             </div>
             {% endif %}
 
@@ -1355,14 +958,14 @@ AUTH_TEMPLATE = """
             </button>
         </form>
 
-        <div class="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800 text-center text-xs space-y-2">
+        <div class="mt-6 pt-4 border-t border-slate-800 text-center text-xs space-y-2">
             {% if mode == 'login' %}
-            <div><a href="/forgot-password" class="text-slate-500 dark:text-slate-400 hover:text-emerald-500 font-bold">Forgot Password?</a></div>
-            <div><span class="text-slate-400">Want to run your shop?</span> <a href="/register-shop" class="text-emerald-600 dark:text-emerald-400 font-bold hover:underline">Register New Shop</a></div>
+            <div><a href="/forgot-password" class="text-slate-400 hover:text-white">Forgot Password?</a></div>
+            <div><span class="text-slate-500">Want to run your shop?</span> <a href="/register-shop" class="text-emerald-400 font-bold hover:underline">Register New Shop</a></div>
             {% elif mode == 'register' %}
-            <div><span class="text-slate-400">Already registered?</span> <a href="/login" class="text-emerald-600 dark:text-emerald-400 font-bold hover:underline">Log In</a></div>
+            <div><span class="text-slate-500">Already registered?</span> <a href="/login" class="text-emerald-400 font-bold hover:underline">Log In</a></div>
             {% else %}
-            <div><a href="/login" class="text-emerald-600 dark:text-emerald-400 font-bold hover:underline">Back to Login</a></div>
+            <div><a href="/login" class="text-emerald-400 font-bold hover:underline">Back to Login</a></div>
             {% endif %}
         </div>
     </div>
@@ -1391,7 +994,6 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
-            session.permanent = False
             session["user_id"] = user["user_id"]
             session["shop_id"] = user["shop_id"]
             session["username"] = user["username"]
@@ -1496,34 +1098,12 @@ def index():
     )
 
 
-@app.route("/api/store/logo", methods=["GET", "POST"])
-@login_required
-def store_logo():
-    shop_id = session["shop_id"]
-    conn = get_db()
-    cursor = conn.cursor()
-    if request.method == "POST":
-        data = request.get_json() or {}
-        logo_data = data.get("logo", "")
-        cursor.execute("UPDATE shops SET store_logo = ? WHERE shop_id = ?", (logo_data, shop_id))
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True})
-    else:
-        cursor.execute("SELECT store_logo FROM shops WHERE shop_id = ?", (shop_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return jsonify({"logo": row["store_logo"] if row and row["store_logo"] else ""})
-
-
 @app.route("/api/staff/list", methods=["GET"])
+@admin_required
 def list_staff():
-    if "user_id" not in session or session.get("role") != "admin":
-        return jsonify({"error": "Unauthorized"}), 401
-    
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, role FROM users ORDER BY role ASC, username ASC;")
+    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? ORDER BY role ASC, username ASC;", (session["shop_id"],))
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
@@ -1568,8 +1148,8 @@ def admin_reset_staff_password():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND role != 'admin'", 
-                   (generate_password_hash(new_password), user_id))
+    cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND shop_id = ? AND role != 'admin'", 
+                   (generate_password_hash(new_password), user_id, session["shop_id"]))
     conn.commit()
     conn.close()
     return jsonify({"success": True})
@@ -1814,6 +1394,7 @@ def get_reports():
     conn = get_db()
     cursor = conn.cursor()
 
+    # Overall Summary
     cursor.execute(f"""
         SELECT 
             COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS total_units_sold,
@@ -1825,6 +1406,7 @@ def get_reports():
     """, (shop_id,))
     totals = cursor.fetchone()
 
+    # Staff Breakdown
     cursor.execute(f"""
         SELECT 
             u.username,
@@ -1851,236 +1433,6 @@ def get_reports():
         },
         "staff": staff_summary
     })
-
-
-@app.route("/api/transactions/drilldown", methods=["GET"])
-@admin_required
-def drilldown_transactions():
-    shop_id = session["shop_id"]
-    mode = request.args.get("mode", "TOTAL")
-    date_val = request.args.get("date")
-
-    pay_filter = ""
-    if mode == "CASH":
-        pay_filter = "AND t.payment_method = 'CASH'"
-    elif mode == "MPESA":
-        pay_filter = "AND t.payment_method = 'MPESA'"
-
-    date_filter = ""
-    params = [shop_id]
-    if date_val:
-        date_filter = "AND DATE(t.timestamp, 'localtime') = ?"
-        params.append(date_val)
-    else:
-        date_filter = "AND DATE(t.timestamp, 'localtime') = DATE('now', 'localtime')"
-
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT 
-            t.transaction_id,
-            t.timestamp,
-            i.name AS product_name,
-            t.quantity,
-            t.payment_method,
-            t.total_amount
-        FROM transactions t
-        JOIN items i ON t.item_id = i.item_id
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter}
-        ORDER BY t.timestamp DESC;
-    """, tuple(params))
-    rows = [dict(r) for r in cursor.fetchall()]
-
-    cursor.execute(f"""
-        SELECT COALESCE(SUM(t.total_amount), 0) as total
-        FROM transactions t
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter};
-    """, tuple(params))
-    total_val = cursor.fetchone()["total"]
-    conn.close()
-
-    return jsonify({"transactions": rows, "total_amount": total_val})
-
-
-@app.route("/api/transactions/drilldown-csv", methods=["GET"])
-@admin_required
-def drilldown_csv():
-    shop_id = session["shop_id"]
-    mode = request.args.get("mode", "TOTAL")
-    date_val = request.args.get("date")
-
-    pay_filter = ""
-    if mode == "CASH":
-        pay_filter = "AND t.payment_method = 'CASH'"
-    elif mode == "MPESA":
-        pay_filter = "AND t.payment_method = 'MPESA'"
-
-    date_filter = ""
-    params = [shop_id]
-    if date_val:
-        date_filter = "AND DATE(t.timestamp, 'localtime') = ?"
-        params.append(date_val)
-    else:
-        date_filter = "AND DATE(t.timestamp, 'localtime') = DATE('now', 'localtime')"
-
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT 
-            t.transaction_id,
-            t.timestamp,
-            i.name AS product_name,
-            t.quantity,
-            t.payment_method,
-            t.total_amount,
-            u.username AS handled_by
-        FROM transactions t
-        JOIN items i ON t.item_id = i.item_id
-        JOIN users u ON t.user_id = u.user_id
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter}
-        ORDER BY t.timestamp DESC;
-    """, tuple(params))
-    rows = cursor.fetchall()
-    conn.close()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Transaction ID", "Timestamp", "Product Name", "Quantity", "Payment Method", "Total Amount (KES)", "Staff Member"])
-    for row in rows:
-        writer.writerow([row["transaction_id"], row["timestamp"], row["product_name"], row["quantity"], row["payment_method"], row["total_amount"], row["handled_by"]])
-    output.seek(0)
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename=sales_breakdown_{mode.lower()}.csv"})
-
-
-@app.route("/api/reports/units-sold", methods=["GET"])
-@admin_required
-def units_sold_report():
-    shop_id = session["shop_id"]
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT 
-            i.name AS product_name,
-            SUM(t.quantity) AS total_units,
-            SUM(t.total_amount) AS total_sales
-        FROM transactions t
-        JOIN items i ON t.item_id = i.item_id
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT'
-        GROUP BY i.item_id
-        ORDER BY total_units DESC;
-    """, (shop_id,))
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return jsonify({"units": rows})
-
-
-@app.route("/api/reports/closing-stock", methods=["GET"])
-@admin_required
-def closing_stock_report():
-    shop_id = session["shop_id"]
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT 
-            name AS product_name,
-            current_stock,
-            (current_stock * unit_price) AS valuation
-        FROM items
-        WHERE shop_id = ? AND is_active = 1
-        ORDER BY name ASC;
-    """, (shop_id,))
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return jsonify({"stock": rows})
-
-
-@app.route("/api/reports/closing-stock-csv", methods=["GET"])
-@admin_required
-def closing_stock_csv():
-    shop_id = session["shop_id"]
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT 
-            name AS product_name,
-            current_stock,
-            unit_price,
-            (current_stock * unit_price) AS valuation
-        FROM items
-        WHERE shop_id = ? AND is_active = 1
-        ORDER BY name ASC;
-    """, (shop_id,))
-    rows = cursor.fetchall()
-    conn.close()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Product Name", "In Stock", "Unit Price (KES)", "Valuation (KES)"])
-    for row in rows:
-        writer.writerow([row["product_name"], row["current_stock"], row["unit_price"], row["valuation"]])
-    output.seek(0)
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=closing_stock_valuation.csv"})
-
-
-@app.route("/api/reports/export-csv", methods=["GET"])
-@admin_required
-def export_raw_csv():
-    shop_id = session["shop_id"]
-    start_date = request.args.get("start")
-    end_date = request.args.get("end")
-    range_type = request.args.get("range")
-
-    date_filter = "1=1"
-    params = [shop_id]
-    if start_date and end_date:
-        date_filter = "DATE(t.timestamp, 'localtime') BETWEEN ? AND ?"
-        params.extend([start_date, end_date])
-    elif range_type == "last_year":
-        date_filter = "strftime('%Y', t.timestamp) = strftime('%Y', 'now', '-1 year')"
-
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT 
-            t.transaction_id,
-            t.timestamp,
-            i.name AS product_name,
-            t.movement_type,
-            t.payment_method,
-            t.quantity,
-            t.unit_price,
-            t.total_amount,
-            u.username AS handled_by
-        FROM transactions t
-        JOIN items i ON t.item_id = i.item_id
-        JOIN users u ON t.user_id = u.user_id
-        WHERE t.shop_id = ? AND {date_filter}
-        ORDER BY t.timestamp DESC;
-    """, tuple(params))
-    rows = cursor.fetchall()
-    conn.close()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "Transaction ID", "Timestamp", "Product Name", 
-        "Movement Type", "Payment Method", "Quantity", 
-        "Unit Price (KES)", "Total Amount (KES)", "Staff Member"
-    ])
-    for row in rows:
-        writer.writerow([
-            row["transaction_id"], row["timestamp"], row["product_name"],
-            row["movement_type"], row["payment_method"], row["quantity"],
-            row["unit_price"], row["total_amount"], row["handled_by"]
-        ])
-    output.seek(0)
-    
-    filename = f"sales_report_{start_date}_to_{end_date}.csv" if start_date else "sales_report.csv"
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
 
 
 @app.route("/manifest.json")
