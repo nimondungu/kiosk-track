@@ -13,11 +13,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, date, timedelta
 
 app = Flask(__name__)
-# Use a static fallback secret key so workers always share the exact same key
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "kiosk_pos_enterprise_multitenant_key_2026_fixed")
+# A constant secret key ensures multiple WSGI workers never invalidate each other's cookies
+app.secret_key = "kiosk_pos_enterprise_multitenant_key_2026_fixed_key"
 
 app.config.update(
-    SESSION_COOKIE_SECURE=False,
+    SESSION_COOKIE_NAME='kiosk_session',
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
     PERMANENT_SESSION_LIFETIME=timedelta(days=30)
@@ -1271,19 +1271,28 @@ HTML_TEMPLATE = """
         async function submitNewStaff() {
             const u = document.getElementById('staffUsername').value.trim();
             const p = document.getElementById('staffPassword').value;
+            if (!u || !p) {
+                showToast("Please enter both username and password", false);
+                return;
+            }
             const res = await fetch('/api/staff/create', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username: u, password: p, role: 'cashier' })
             });
             const d = await res.json();
             if (res.ok) {
-                showToast(`Cashier ${u} created!`);
+                showToast(`Cashier @${u} created!`);
                 openStaffModal();
                 document.getElementById('staffUsername').value = '';
                 document.getElementById('staffPassword').value = '';
             } else {
-                showToast(d.error || 'Failed to create user', false);
+                if (res.status === 401 || res.status === 403) {
+                    showToast("Session expired. Please log out and log in again.", false);
+                } else {
+                    showToast(d.error || 'Failed to create cashier', false);
+                }
             }
         }
 
@@ -1435,7 +1444,7 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
-            session.permanent = True  # Keeps you logged in for 30 days
+            session.permanent = True   # Keeps session active for 30 days
             session["user_id"] = user["user_id"]
             session["shop_id"] = user["shop_id"]
             session["username"] = user["username"]
@@ -1584,6 +1593,7 @@ def create_staff():
     username = (data.get("username") or "").strip()
     password = data.get("password")
     role = data.get("role", "cashier")
+    shop_id = session.get("shop_id") or 1
 
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
@@ -1594,7 +1604,7 @@ def create_staff():
         cursor.execute("""
             INSERT INTO users (shop_id, username, password_hash, role)
             VALUES (?, ?, ?, ?)
-        """, (session["shop_id"], username, generate_password_hash(password), role))
+        """, (shop_id, username, generate_password_hash(password), role))
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close()
