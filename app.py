@@ -2270,7 +2270,11 @@ def manifest():
 
 @app.route("/sw.js")
 def service_worker():
-    return send_from_directory("static", "sw.js", mimetype="application/javascript")
+    response = send_from_directory("static", "sw.js", mimetype="application/javascript")
+    # Tell browser service worker is valid across root scope
+    response.headers['Service-Worker-Allowed'] = '/'
+    return response
+
 
 
 if __name__ == "__main__":
