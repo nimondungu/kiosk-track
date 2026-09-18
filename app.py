@@ -773,6 +773,7 @@ HTML_TEMPLATE = """
             });
         }
 
+        // Automatically load server logo when opening app on Web or Phone
         window.addEventListener('DOMContentLoaded', () => {
             const savedLang = localStorage.getItem('kiosk_lang') || 'en';
             const langEl = document.getElementById('langSelect');
@@ -791,17 +792,111 @@ HTML_TEMPLATE = """
                 if (themeIcon) themeIcon.innerText = '🌙';
             }
 
-            setTimeout(fetchServerLogo, 100);
+            // Fetch cloud logo from database
+            fetchServerLogo();
         });
 
         async function fetchServerLogo() {
             try {
-                const res = await fetch('/api/store/logo');
-                const d = await res.json();
-                if (d.logo) {
-                    applyAvatar(d.logo);
+                const res = await fetch('/api/store/logo', { credentials: 'same-origin' });
+                if (res.ok) {
+                    const d = await res.json();
+                    if (d.logo && d.logo.trim() !== '') {
+                        applyAvatar(d.logo);
+                    }
                 }
-            } catch (err) { console.error(err); }
+            } catch (err) {
+                console.error("Could not fetch server logo:", err);
+            }
+        }
+
+        // Compresses camera/gallery photos so uploads work fast on both phone and web
+        function handleAvatarUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            showToast("Processing & syncing logo...");
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    // Resize to 300x300 square thumbnail using canvas
+                    const canvas = document.createElement('canvas');
+                    const size = 300;
+                    canvas.width = size;
+                    canvas.height = size;
+                    const ctx = canvas.getContext('2d');
+
+                    // Center-crop square
+                    const minDim = Math.min(img.width, img.height);
+                    const startX = (img.width - minDim) / 2;
+                    const startY = (img.height - minDim) / 2;
+
+                    ctx.drawImage(img, startX, startY, minDim, minDim, 0, 0, size, size);
+                    const compressedBase64 = canvas.toDataURL('image/jpeg', 0.85);
+
+                    // Save to cloud database
+                    fetch('/api/store/logo', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ logo: compressedBase64 })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            applyAvatar(compressedBase64);
+                            showToast("Store logo updated and synced to all devices!");
+                        } else {
+                            showToast("Failed to save logo", false);
+                        }
+                    })
+                    .catch(err => {
+                        showToast("Upload error: " + err.message, false);
+                    });
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function applyAvatar(src) {
+            ['navAvatarImage', 'avatarImage'].forEach(id => {
+                const img = document.getElementById(id);
+                if (img) { 
+                    img.src = src; 
+                    img.classList.remove('hidden'); 
+                }
+            });
+            ['navAvatarInitials', 'avatarInitials'].forEach(id => {
+                const init = document.getElementById(id);
+                if (init) { 
+                    init.classList.add('hidden'); 
+                }
+            });
+        }
+
+        async function removeAvatar() {
+            try {
+                await fetch('/api/store/logo', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ logo: '' })
+                });
+                ['navAvatarImage', 'avatarImage'].forEach(id => {
+                    const img = document.getElementById(id);
+                    if (img) { img.src = ''; img.classList.add('hidden'); }
+                });
+                ['navAvatarInitials', 'avatarInitials'].forEach(id => {
+                    const init = document.getElementById(id);
+                    if (init) { init.classList.remove('hidden'); }
+                });
+                showToast("Store logo removed");
+            } catch (err) {
+                showToast("Error removing logo", false);
+            }
         }
 
         if ('serviceWorker' in navigator) {
@@ -1552,18 +1647,19 @@ def index():
 @app.route("/api/store/logo", methods=["GET", "POST"])
 @login_required
 def store_logo():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
     if request.method == "POST":
         data = request.get_json() or {}
         logo_data = data.get("logo", "")
-        cursor.execute("UPDATE shops SET store_logo = ? WHERE shop_id = ?", (logo_data, shop_id))
+        # Update current shop and fallback shop_id 1 so all cashiers and devices see it
+        cursor.execute("UPDATE shops SET store_logo = ? WHERE shop_id = ? OR shop_id = 1", (logo_data, shop_id))
         conn.commit()
         conn.close()
         return jsonify({"success": True})
     else:
-        cursor.execute("SELECT store_logo FROM shops WHERE shop_id = ?", (shop_id,))
+        cursor.execute("SELECT store_logo FROM shops WHERE shop_id = ? OR shop_id = 1 ORDER BY (shop_id = ?) DESC LIMIT 1", (shop_id, shop_id))
         row = cursor.fetchone()
         conn.close()
         return jsonify({"logo": row["store_logo"] if row and row["store_logo"] else ""})
@@ -1572,7 +1668,7 @@ def store_logo():
 @app.route("/api/staff/list", methods=["GET"])
 @admin_required
 def list_staff():
-    shop_id = session.get("shop_id")
+    shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
