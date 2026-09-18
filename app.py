@@ -1182,12 +1182,14 @@ HTML_TEMPLATE = """
             document.getElementById('staffModal').classList.remove('hidden');
             const listEl = document.getElementById('existingStaffList');
             listEl.innerHTML = `<div class="py-3 text-center text-slate-400">Loading team...</div>`;
+            
             try {
-                const res = await fetch('/api/staff/list', { credentials: 'same-origin' });
+                const res = await fetch('/api/staff/list');
                 if (!res.ok) {
                     let msg = `Request failed (${res.status})`;
-                    if (res.status === 401) msg = "Session expired — please log out and log in again.";
-                    if (res.status === 403) msg = "Your session is not recognised as admin. Log out and log in again.";
+                    if (res.status === 401 || res.status === 403) {
+                        msg = "Session expired — please log out and log in again.";
+                    }
                     listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">${msg}</div>`;
                     return;
                 }
@@ -1197,22 +1199,30 @@ HTML_TEMPLATE = """
                     listEl.innerHTML = `<div class="py-3 text-center text-slate-400">No cashiers found. Create one below!</div>`;
                     return;
                 }
+                
                 listEl.innerHTML = users.map(u => `
-                    <div class="py-2.5 flex items-center justify-between">
+                    <div class="py-2.5 flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80">
                         <div>
                             <span class="font-bold text-slate-900 dark:text-white">@${u.username}</span>
                             <span class="text-[10px] text-slate-400 uppercase font-semibold">(${u.role})</span>
                         </div>
                         ${u.role !== 'admin' ? `
-                            <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">Reset Password</button>
+                            <div class="flex items-center gap-2">
+                                <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">
+                                    Reset
+                                </button>
+                                <button onclick="deleteStaff(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-rose-500 hover:text-rose-600">
+                                    Delete 🗑️
+                                </button>
+                            </div>
                         ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
                     </div>
                 `).join('');
             } catch (err) {
-                listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">Could not reach server: ${err.message}</div>`;
+                listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">Could not load staff: ${err.message}</div>`;
             }
         }
-
+        
         function closeStaffModal() { document.getElementById('staffModal').classList.add('hidden'); }
 
         async function resetStaffPassword(userId, username) {
@@ -1231,6 +1241,24 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function deleteStaff(userId, username) {
+            if (!confirm(`Are you sure you want to remove cashier @${username}?`)) {
+                return;
+            }
+            const res = await fetch('/api/staff/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId })
+            });
+            const d = await res.json();
+            if (res.ok) {
+                showToast(`Cashier @${username} removed!`);
+                openStaffModal(); // refresh the list
+            } else {
+                showToast(d.error || 'Failed to remove cashier', false);
+            }
+        }
+        
         async function submitNewStaff() {
             const u = document.getElementById('staffUsername').value.trim();
             const p = document.getElementById('staffPassword').value;
@@ -1529,8 +1557,12 @@ def list_staff():
     shop_id = session.get("shop_id")
     conn = get_db()
     cursor = conn.cursor()
-    # Fixed: Universal fallback query so admin always sees all staff members tied to their shop or fallback defaults
-    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? OR shop_id = 1 ORDER BY role ASC, username ASC;", (shop_id,))
+    cursor.execute("""
+        SELECT user_id, username, role 
+        FROM users 
+        WHERE shop_id = ? OR shop_id = 1 
+        ORDER BY role ASC, username ASC;
+    """, (shop_id,))
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
@@ -1577,6 +1609,35 @@ def admin_reset_staff_password():
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND role != 'admin'", 
                    (generate_password_hash(new_password), user_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/staff/delete", methods=["POST"])
+@admin_required
+def delete_staff():
+    data = request.get_json() or {}
+    user_id = int(data.get("user_id", 0))
+
+    if not user_id:
+        return jsonify({"error": "User ID required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    # Ensure the user being deleted belongs to this shop and is NOT an admin
+    cursor.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
+    target = cursor.fetchone()
+    
+    if not target:
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+        
+    if target["role"] == "admin":
+        conn.close()
+        return jsonify({"error": "Cannot delete admin account"}), 403
+
+    cursor.execute("DELETE FROM users WHERE user_id = ? AND role != 'admin'", (user_id,))
     conn.commit()
     conn.close()
     return jsonify({"success": True})
