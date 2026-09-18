@@ -320,21 +320,50 @@ HTML_TEMPLATE = """
                 </div>
 
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
+                    <div onclick="openDrilldown('TOTAL')" class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-indigo-500 transition hover:scale-[1.02]">
                         <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💰</span> Revenue</span>
                         <div id="repTotalRev" class="text-base font-black text-slate-900 dark:text-white">KES 0</div>
                     </div>
-                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
+                    <div onclick="openUnitsSoldModal()" class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02]">
                         <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📦</span> Units Sold</span>
                         <div id="repTotalUnits" class="text-base font-black text-emerald-600 dark:text-emerald-400">0 pcs</div>
                     </div>
-                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
+                    <div onclick="openDrilldown('CASH')" class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02]">
                         <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>💵</span> Cash</span>
                         <div id="repCash" class="text-base font-black text-emerald-500">KES 0</div>
                     </div>
-                    <div class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800">
+                    <div onclick="openDrilldown('MPESA')" class="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 cursor-pointer hover:border-green-500 transition hover:scale-[1.02]">
                         <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1"><span>📲</span> M-Pesa</span>
                         <div id="repMpesa" class="text-base font-black text-green-500">KES 0</div>
+                    </div>
+                </div>
+
+                <div onclick="openClosingStockModal()" class="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between cursor-pointer hover:border-sky-500 transition hover:scale-[1.01]">
+                    <div class="flex items-center gap-2">
+                        <span class="text-lg">📦</span>
+                        <div>
+                            <div class="font-bold text-xs text-slate-900 dark:text-white">Remaining Closing Stock</div>
+                            <div class="text-[10px] text-slate-500">Click to inspect remaining items & valuation</div>
+                        </div>
+                    </div>
+                    <span class="text-xs font-bold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950/80 px-2.5 py-1 rounded-lg border border-sky-200 dark:border-sky-800">View List →</span>
+                </div>
+
+                <div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2.5 text-xs">
+                    <span class="font-bold text-slate-400 uppercase text-[10px]">📥 Flexible Range CSV Export:</span>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-[10px] text-slate-400 mb-1">Start Date</label>
+                            <input type="date" id="exportStart" class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1.5 text-xs text-slate-900 dark:text-white">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] text-slate-400 mb-1">End Date</label>
+                            <input type="date" id="exportEnd" class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1.5 text-xs text-slate-900 dark:text-white">
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 pt-1">
+                        <button onclick="downloadRangeCsv()" class="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-bold py-2 rounded-xl transition shadow-sm hover:scale-[1.02]">Download Range CSV</button>
+                        <a href="/api/reports/export-csv?range=all" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold px-3 py-2 rounded-xl transition text-center">All-Time CSV</a>
                     </div>
                 </div>
 
@@ -395,6 +424,189 @@ HTML_TEMPLATE = """
             </div>
         </section>
         {% endif %}
+
+        <section id="screen-profile" class="tab-screen hidden">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 mb-6 shadow-sm space-y-6">
+                
+                <div class="flex items-center gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
+                    <div class="relative group cursor-pointer" onclick="document.getElementById('avatarInput').click()">
+                        <div class="w-16 h-16 rounded-2xl bg-emerald-100 dark:bg-emerald-950/80 border-2 border-emerald-300 dark:border-emerald-800 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-black text-2xl overflow-hidden shadow-inner">
+                            <span id="avatarInitials">{{ session.get('shop_name', 'K')[0]|upper }}</span>
+                            <img id="avatarImage" src="" alt="Logo" class="w-full h-full object-cover hidden">
+                        </div>
+                        <div class="absolute inset-0 bg-black/40 rounded-2xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition text-white text-[10px] font-bold">
+                            Edit
+                        </div>
+                    </div>
+                    <div>
+                        <h2 class="text-base font-black text-slate-900 dark:text-white">{{ session.get('shop_name') }}</h2>
+                        <p class="text-xs text-emerald-600 dark:text-emerald-400 font-bold">@{{ session.get('username') }} • <span class="uppercase text-[10px]">{{ session.get('role') }}</span></p>
+                        <button onclick="document.getElementById('avatarInput').click()" class="text-[11px] font-bold text-indigo-500 hover:underline mt-1 inline-block">Change Store Logo</button>
+                    </div>
+                </div>
+
+                <input type="file" id="avatarInput" accept="image/*" class="hidden" onchange="handleAvatarUpload(event)">
+
+                <div class="space-y-4 text-xs">
+                    <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                        <div class="font-bold text-slate-900 dark:text-white flex items-center gap-1.5 uppercase text-[10px] tracking-wider text-slate-400">
+                            <span>⚙️</span> App Settings & Preferences
+                        </div>
+                        
+                        <div class="flex items-center justify-between py-1.5 border-b border-slate-200 dark:border-slate-800">
+                            <span class="font-semibold text-slate-700 dark:text-slate-300">Theme Mode</span>
+                            <button onclick="toggleTheme()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1">
+                                <span id="themeToggleLabel">Toggle Light/Dark</span>
+                            </button>
+                        </div>
+
+                        <div class="flex items-center justify-between py-1">
+                            <span class="font-semibold text-slate-700 dark:text-slate-300">App Version</span>
+                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v2.8</span>
+                        </div>
+                    </div>
+
+                    <button onclick="triggerNativeInstall()" class="w-full bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold py-3 px-4 rounded-xl transition flex items-center justify-center gap-2 shadow-md hover:scale-[1.01]">
+                        <span>📲</span> Install App on Phone
+                    </button>
+
+                    <div class="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+                        <div class="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                            <span>🔗</span> Share Store Link
+                        </div>
+                        <p class="text-[11px] text-slate-500 leading-relaxed">Copy your store link or share instantly with customers and friends via WhatsApp.</p>
+                        
+                        <div class="flex items-center gap-2">
+                            <input type="text" id="storeLinkInput" readonly value="https://kiosktrack.pythonanywhere.com" 
+                                   class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-700 dark:text-slate-300 font-mono text-xs focus:outline-none">
+                            <button onclick="copyStoreLink()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-800 dark:text-slate-200 font-bold px-3 py-2 rounded-xl transition shrink-0 flex items-center gap-1 hover:scale-105">
+                                <span>📋</span> Copy
+                            </button>
+                        </div>
+
+                        <a href="https://api.whatsapp.com/send?text=Hey!%20Check%20out%20our%20store%20on%20Kiosk%20Track:%20https://kiosktrack.pythonanywhere.com" 
+                           target="_blank" 
+                           class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 shadow-sm hover:scale-[1.01]">
+                            <span>💬</span> Share via WhatsApp
+                        </a>
+                    </div>
+
+                    <div class="flex items-center justify-between bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
+                        <span class="text-[11px] font-bold text-slate-500">Store Logo / Picture</span>
+                        <button onclick="removeAvatar()" class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 text-rose-600 font-bold px-3 py-1.5 rounded-lg transition border border-rose-200 dark:border-rose-800 hover:scale-105">Remove Logo</button>
+                    </div>
+                </div>
+
+                <div class="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-4">
+                    <a href="/logout" class="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-3 rounded-xl transition text-center shadow-lg flex items-center justify-center gap-2 hover:scale-[1.01]">
+                        <span>Log out</span>
+                    </a>
+
+                    <div class="text-center pt-2 space-y-0.5">
+                        <p class="text-[10px] text-slate-400 font-semibold">© 2026 Kiosk Track. All rights reserved.</p>
+                        <p class="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold">Empowering Businesses WorldWide.</p>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <div id="drilldownModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+                    <div>
+                        <h3 class="text-sm font-black text-slate-900 dark:text-white" id="drilldownTitle">Sales Details</h3>
+                        <span class="text-xs text-emerald-600 font-bold" id="drilldownSubTotal">Total: KES 0</span>
+                    </div>
+                    <button onclick="closeDrilldownModal()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
+                </div>
+                
+                <div class="flex items-center gap-2 bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
+                    <span class="font-bold text-slate-400 uppercase text-[10px]">Filter Date:</span>
+                    <input type="date" id="drilldownDate" onchange="fetchDrilldownData()" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1 font-bold">
+                    <button onclick="resetDrilldownDate()" class="text-[10px] font-bold text-indigo-500 hover:underline ml-auto">All Range</button>
+                </div>
+
+                <div class="overflow-y-auto flex-1 pr-1 max-h-72">
+                    <table class="w-full text-xs text-left">
+                        <thead class="text-[10px] uppercase text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                            <tr>
+                                <th class="py-2">Time</th>
+                                <th class="py-2">Product</th>
+                                <th class="py-2">Qty</th>
+                                <th class="py-2">Method</th>
+                                <th class="py-2 font-bold">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody id="drilldownTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <tr><td colspan="5" class="py-4 text-center text-slate-400">Loading transactions...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="flex justify-between items-center pt-3 border-t border-slate-200 dark:border-slate-800">
+                    <button onclick="downloadDrilldownCsv()" class="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center gap-1">
+                        <span>📥</span> Download CSV
+                    </button>
+                    <button onclick="closeDrilldownModal()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-700 dark:text-slate-200 font-bold text-xs px-4 py-2 rounded-xl transition">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="unitsSoldModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+                    <h3 class="text-sm font-black text-slate-900 dark:text-white">📦 Units Sold Breakdown</h3>
+                    <button onclick="closeUnitsSoldModal()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
+                </div>
+                <div class="overflow-y-auto flex-1 pr-1 max-h-72">
+                    <table class="w-full text-xs text-left">
+                        <thead class="text-[10px] uppercase text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                            <tr>
+                                <th class="py-2">Product Name</th>
+                                <th class="py-2">Units Sold</th>
+                                <th class="py-2 font-bold">Total Sales</th>
+                            </tr>
+                        </thead>
+                        <tbody id="unitsSoldTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <tr><td colspan="3" class="py-4 text-center text-slate-400">Loading units sold...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="flex justify-end pt-3 border-t border-slate-200 dark:border-slate-800">
+                    <button onclick="closeUnitsSoldModal()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-700 dark:text-slate-200 font-bold text-xs px-4 py-2 rounded-xl transition">Close</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="closingStockModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+                    <h3 class="text-sm font-black text-slate-900 dark:text-white">📦 Remaining Closing Stock</h3>
+                    <button onclick="closeClosingStockModal()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
+                </div>
+                <div class="overflow-y-auto flex-1 pr-1 max-h-72">
+                    <table class="w-full text-xs text-left">
+                        <thead class="text-[10px] uppercase text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                            <tr>
+                                <th class="py-2">Product Name</th>
+                                <th class="py-2">In Stock</th>
+                                <th class="py-2 font-bold">Valuation (KES)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="closingStockTableBody" class="divide-y divide-slate-100 dark:divide-slate-800">
+                            <tr><td colspan="3" class="py-4 text-center text-slate-400">Loading closing stock...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="flex justify-between items-center pt-3 border-t border-slate-200 dark:border-slate-800">
+                    <button onclick="downloadClosingStockCsv()" class="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition">📥 Download CSV</button>
+                    <button onclick="closeClosingStockModal()" class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-slate-700 dark:text-slate-200 font-bold text-xs px-4 py-2 rounded-xl transition">Close</button>
+                </div>
+            </div>
+        </div>
 
         <div id="staffModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4">
@@ -728,26 +940,36 @@ HTML_TEMPLATE = """
 
         async function openStaffModal() {
             document.getElementById('staffModal').classList.remove('hidden');
-            const res = await fetch('/api/staff/list');
-            const data = await res.json();
             const listEl = document.getElementById('existingStaffList');
-            const users = data.users || data;
-            if (users && users.length > 0) {
+            listEl.innerHTML = `<div class="py-3 text-center text-slate-400">Loading team...</div>`;
+            try {
+                const res = await fetch('/api/staff/list', { credentials: 'same-origin' });
+                if (!res.ok) {
+                    let msg = `Request failed (${res.status})`;
+                    if (res.status === 401) msg = "Session expired — please log out and log in again.";
+                    if (res.status === 403) msg = "Your session is not recognised as admin. Log out and log in again.";
+                    listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">${msg}</div>`;
+                    return;
+                }
+                const data = await res.json();
+                const users = Array.isArray(data) ? data : (data.users || []);
+                if (users.length === 0) {
+                    listEl.innerHTML = `<div class="py-3 text-center text-slate-400">No cashiers found. Create one below!</div>`;
+                    return;
+                }
                 listEl.innerHTML = users.map(u => `
                     <div class="py-2.5 flex items-center justify-between">
                         <div>
-                            <span class="font-bold text-slate-900 dark:text-white">@${u.username}</span> 
+                            <span class="font-bold text-slate-900 dark:text-white">@${u.username}</span>
                             <span class="text-[10px] text-slate-400 uppercase font-semibold">(${u.role})</span>
                         </div>
                         ${u.role !== 'admin' ? `
-                            <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">
-                                Reset Password
-                            </button>
+                            <button onclick="resetStaffPassword(${u.user_id}, '${u.username}')" class="text-[11px] font-bold text-indigo-500 hover:underline">Reset Password</button>
                         ` : '<span class="text-[10px] text-emerald-500 font-bold">Owner</span>'}
                     </div>
                 `).join('');
-            } else {
-                listEl.innerHTML = `<div class="py-3 text-center text-slate-400">No cashiers found. Create one below!</div>`;
+            } catch (err) {
+                listEl.innerHTML = `<div class="py-3 text-center text-rose-500 font-bold">Could not reach server: ${err.message}</div>`;
             }
         }
 
@@ -781,7 +1003,7 @@ HTML_TEMPLATE = """
             if (res.ok) {
                 showToast(`Cashier ${u} created!`);
                 openStaffModal();
-                document.getElementById('staffUsername').value = '
+                document.getElementById('staffUsername').value = '';
                 document.getElementById('staffPassword').value = '';
             } else {
                 showToast(d.error || 'Failed to create user', false);
@@ -1064,10 +1286,11 @@ def store_logo():
 @app.route("/api/staff/list", methods=["GET"])
 @admin_required
 def list_staff():
+    shop_id = session.get("shop_id")
     conn = get_db()
     cursor = conn.cursor()
-    # Universal fallback query: returns users from the active shop OR shop 2 so cashiers are never missed
-    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? OR shop_id = 2 ORDER BY role ASC, username ASC;", (session["shop_id"],))
+    # Universal fallback: queries active shop OR shop 2 so cashiers never show as empty
+    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? OR shop_id = 2 ORDER BY role ASC, username ASC;", (shop_id,))
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
@@ -1395,6 +1618,236 @@ def get_reports():
         },
         "staff": staff_summary
     })
+
+
+@app.route("/api/transactions/drilldown", methods=["GET"])
+@admin_required
+def drilldown_transactions():
+    shop_id = session["shop_id"]
+    mode = request.args.get("mode", "TOTAL")
+    date_val = request.args.get("date")
+
+    pay_filter = ""
+    if mode == "CASH":
+        pay_filter = "AND t.payment_method = 'CASH'"
+    elif mode == "MPESA":
+        pay_filter = "AND t.payment_method = 'MPESA'"
+
+    date_filter = ""
+    params = [shop_id]
+    if date_val:
+        date_filter = "AND DATE(t.timestamp, 'localtime') = ?"
+        params.append(date_val)
+    else:
+        date_filter = "AND DATE(t.timestamp, 'localtime') = DATE('now', 'localtime')"
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        SELECT 
+            t.transaction_id,
+            t.timestamp,
+            i.name AS product_name,
+            t.quantity,
+            t.payment_method,
+            t.total_amount
+        FROM transactions t
+        JOIN items i ON t.item_id = i.item_id
+        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter}
+        ORDER BY t.timestamp DESC;
+    """, tuple(params))
+    rows = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute(f"""
+        SELECT COALESCE(SUM(t.total_amount), 0) as total
+        FROM transactions t
+        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter};
+    """, tuple(params))
+    total_val = cursor.fetchone()["total"]
+    conn.close()
+
+    return jsonify({"transactions": rows, "total_amount": total_val})
+
+
+@app.route("/api/transactions/drilldown-csv", methods=["GET"])
+@admin_required
+def drilldown_csv():
+    shop_id = session["shop_id"]
+    mode = request.args.get("mode", "TOTAL")
+    date_val = request.args.get("date")
+
+    pay_filter = ""
+    if mode == "CASH":
+        pay_filter = "AND t.payment_method = 'CASH'"
+    elif mode == "MPESA":
+        pay_filter = "AND t.payment_method = 'MPESA'"
+
+    date_filter = ""
+    params = [shop_id]
+    if date_val:
+        date_filter = "AND DATE(t.timestamp, 'localtime') = ?"
+        params.append(date_val)
+    else:
+        date_filter = "AND DATE(t.timestamp, 'localtime') = DATE('now', 'localtime')"
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        SELECT 
+            t.transaction_id,
+            t.timestamp,
+            i.name AS product_name,
+            t.quantity,
+            t.payment_method,
+            t.total_amount,
+            u.username AS handled_by
+        FROM transactions t
+        JOIN items i ON t.item_id = i.item_id
+        JOIN users u ON t.user_id = u.user_id
+        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter}
+        ORDER BY t.timestamp DESC;
+    """, tuple(params))
+    rows = cursor.fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Transaction ID", "Timestamp", "Product Name", "Quantity", "Payment Method", "Total Amount (KES)", "Staff Member"])
+    for row in rows:
+        writer.writerow([row["transaction_id"], row["timestamp"], row["product_name"], row["quantity"], row["payment_method"], row["total_amount"], row["handled_by"]])
+    output.seek(0)
+    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename=sales_breakdown_{mode.lower()}.csv"})
+
+
+@app.route("/api/reports/units-sold", methods=["GET"])
+@admin_required
+def units_sold_report():
+    shop_id = session["shop_id"]
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            i.name AS product_name,
+            SUM(t.quantity) AS total_units,
+            SUM(t.total_amount) AS total_sales
+        FROM transactions t
+        JOIN items i ON t.item_id = i.item_id
+        WHERE t.shop_id = ? AND t.movement_type = 'OUT'
+        GROUP BY i.item_id
+        ORDER BY total_units DESC;
+    """, (shop_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"units": rows})
+
+
+@app.route("/api/reports/closing-stock", methods=["GET"])
+@admin_required
+def closing_stock_report():
+    shop_id = session["shop_id"]
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            name AS product_name,
+            current_stock,
+            (current_stock * unit_price) AS valuation
+        FROM items
+        WHERE shop_id = ? AND is_active = 1
+        ORDER BY name ASC;
+    """, (shop_id,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify({"stock": rows})
+
+
+@app.route("/api/reports/closing-stock-csv", methods=["GET"])
+@admin_required
+def closing_stock_csv():
+    shop_id = session["shop_id"]
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            name AS product_name,
+            current_stock,
+            unit_price,
+            (current_stock * unit_price) AS valuation
+        FROM items
+        WHERE shop_id = ? AND is_active = 1
+        ORDER BY name ASC;
+    """, (shop_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Product Name", "In Stock", "Unit Price (KES)", "Valuation (KES)"])
+    for row in rows:
+        writer.writerow([row["product_name"], row["current_stock"], row["unit_price"], row["valuation"]])
+    output.seek(0)
+    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=closing_stock_valuation.csv"})
+
+
+@app.route("/api/reports/export-csv", methods=["GET"])
+@admin_required
+def export_raw_csv():
+    shop_id = session["shop_id"]
+    start_date = request.args.get("start")
+    end_date = request.args.get("end")
+    range_type = request.args.get("range")
+
+    date_filter = "1=1"
+    params = [shop_id]
+    if start_date and end_date:
+        date_filter = "DATE(t.timestamp, 'localtime') BETWEEN ? AND ?"
+        params.extend([start_date, end_date])
+    elif range_type == "last_year":
+        date_filter = "strftime('%Y', t.timestamp) = strftime('%Y', 'now', '-1 year')"
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        SELECT 
+            t.transaction_id,
+            t.timestamp,
+            i.name AS product_name,
+            t.movement_type,
+            t.payment_method,
+            t.quantity,
+            t.unit_price,
+            t.total_amount,
+            u.username AS handled_by
+        FROM transactions t
+        JOIN items i ON t.item_id = i.item_id
+        JOIN users u ON t.user_id = u.user_id
+        WHERE t.shop_id = ? AND {date_filter}
+        ORDER BY t.timestamp DESC;
+    """, tuple(params))
+    rows = cursor.fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Transaction ID", "Timestamp", "Product Name", 
+        "Movement Type", "Payment Method", "Quantity", 
+        "Unit Price (KES)", "Total Amount (KES)", "Staff Member"
+    ])
+    for row in rows:
+        writer.writerow([
+            row["transaction_id"], row["timestamp"], row["product_name"],
+            row["movement_type"], row["payment_method"], row["quantity"],
+            row["unit_price"], row["total_amount"], row["handled_by"]
+        ])
+    output.seek(0)
+    
+    filename = f"sales_report_{start_date}_to_{end_date}.csv" if start_date else "sales_report.csv"
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @app.route("/manifest.json")
