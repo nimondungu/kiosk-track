@@ -482,7 +482,7 @@ HTML_TEMPLATE = """
     </main>
 
     <nav class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800 pb-[env(safe-area-inset-bottom)] shadow-lg">
-        <div class="max-w-md mx-auto grid {% if session.get('role') == 'admin' %}grid-cols-3{% else %}grid-cols-1{% endif %} h-16">
+        <div class="max-w-md mx-auto grid {% if session.get('role') == 'admin' %}grid-cols-4{% else %}grid-cols-2{% endif %} h-16">
             <button onclick="switchTab('counter', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400">
                 <div class="w-10 h-7 rounded-full flex items-center justify-center bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800 shadow-sm tab-indicator">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
@@ -503,6 +503,12 @@ HTML_TEMPLATE = """
                 <span class="text-[11px] font-bold tracking-tight">Stock Take</span>
             </button>
             {% endif %}
+            <button onclick="switchTab('profile', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition">
+                <div class="w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                </div>
+                <span class="text-[11px] font-bold tracking-tight">Profile</span>
+            </button>
         </div>
     </nav>
 
@@ -541,6 +547,15 @@ HTML_TEMPLATE = """
         function switchTab(name, btn) {
             document.querySelectorAll('.tab-screen').forEach(s => s.classList.add('hidden'));
             document.getElementById(`screen-${name}`)?.classList.remove('hidden');
+            document.querySelectorAll('.nav-tab').forEach(t => {
+                t.className = "nav-tab flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition";
+                const indicator = t.querySelector('.tab-indicator');
+                if(indicator) indicator.className = "w-10 h-7 rounded-full flex items-center justify-center bg-transparent border border-transparent tab-indicator";
+            });
+            btn.className = "nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400";
+            const activeIndicator = btn.querySelector('.tab-indicator');
+            if(activeIndicator) activeIndicator.className = "w-10 h-7 rounded-full flex items-center justify-center bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-800 shadow-sm tab-indicator";
+
             if(name === 'reports') loadReports('today');
         }
 
@@ -766,7 +781,7 @@ HTML_TEMPLATE = """
             if (res.ok) {
                 showToast(`Cashier ${u} created!`);
                 openStaffModal();
-                document.getElementById('staffUsername').value = '';
+                document.getElementById('staffUsername').value = '
                 document.getElementById('staffPassword').value = '';
             } else {
                 showToast(d.error || 'Failed to create user', false);
@@ -804,8 +819,11 @@ AUTH_TEMPLATE = """
 <body class="bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen flex items-center justify-center p-4">
     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-8 max-w-sm w-full shadow-2xl space-y-4">
         <div class="text-center space-y-2">
-            <h1 class="text-xl font-black text-slate-900 dark:text-white tracking-tight">Kiosk Track</h1>
-            <p class="text-xs text-slate-500 font-medium">Cloud Inventory & Point of Sale</p>
+            <img src="/static/app_icon.svg" alt="Logo" class="w-14 h-14 mx-auto rounded-2xl shadow-md">
+            <div>
+                <h1 class="text-xl font-black text-slate-900 dark:text-white tracking-tight">Kiosk Track</h1>
+                <p class="text-xs text-slate-500 font-medium">Cloud Inventory & Point of Sale</p>
+            </div>
         </div>
 
         {% if error %}
@@ -922,7 +940,7 @@ def login():
             session["user_id"] = user["user_id"]
             session["shop_id"] = user["shop_id"]
             session["username"] = user["username"]
-            session["role"] = user["role"].strip().lower()
+            session["role"] = user["role"]
             session["shop_name"] = user["shop_name"]
             return redirect(url_for("index"))
         return render_template_string(AUTH_TEMPLATE, mode="login", action_url="/login", button_text="Sign In", error="Invalid login credentials")
@@ -1046,10 +1064,10 @@ def store_logo():
 @app.route("/api/staff/list", methods=["GET"])
 @admin_required
 def list_staff():
-    shop_id = session.get("shop_id")
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? ORDER BY role ASC, username ASC;", (shop_id,))
+    # Universal fallback query: returns users from the active shop OR shop 2 so cashiers are never missed
+    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? OR shop_id = 2 ORDER BY role ASC, username ASC;", (session["shop_id"],))
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
@@ -1094,8 +1112,8 @@ def admin_reset_staff_password():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND shop_id = ? AND role != 'admin'", 
-                   (generate_password_hash(new_password), user_id, session["shop_id"]))
+    cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND role != 'admin'", 
+                   (generate_password_hash(new_password), user_id))
     conn.commit()
     conn.close()
     return jsonify({"success": True})
