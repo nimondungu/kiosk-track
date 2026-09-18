@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Duka Track POS",
-  "short_name": "Duka Track",
+  "name": "Kiosk Track POS",
+  "short_name": "Kiosk Track",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
