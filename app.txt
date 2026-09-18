@@ -225,7 +225,6 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <!-- Clickable Stat Cards -->
             <div class="grid grid-cols-3 gap-2 mb-3">
                 <div onclick="openDrilldown('CASH')" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 shadow-sm cursor-pointer hover:border-emerald-500 transition hover:scale-[1.02] active:scale-95">
                     <span class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5" data-i18n="cash">💵 Cash</span>
@@ -525,7 +524,6 @@ HTML_TEMPLATE = """
             </div>
         </section>
 
-        <!-- Drilldown Modal -->
         <div id="drilldownModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -570,7 +568,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Units Sold Modal -->
         <div id="unitsSoldModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -597,7 +594,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Closing Stock Modal -->
         <div id="closingStockModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -625,7 +621,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Staff Modal -->
         <div id="staffModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -654,7 +649,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Add Item Modal -->
         <div id="addItemModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -684,7 +678,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Split Modal -->
         <div id="splitModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -1524,13 +1517,13 @@ def store_logo():
 
 
 @app.route("/api/staff/list", methods=["GET"])
-@admin_required
 def list_staff():
-    shop_id = session.get("shop_id")
+    if "user_id" not in session or session.get("role") != "admin":
+        return jsonify({"error": "Unauthorized"}), 401
+    
     conn = get_db()
     cursor = conn.cursor()
-    # Fixed: Universal fallback query so admin always sees all staff members tied to their shop or fallback defaults
-    cursor.execute("SELECT user_id, username, role FROM users WHERE shop_id = ? OR shop_id = 1 ORDER BY role ASC, username ASC;", (shop_id,))
+    cursor.execute("SELECT user_id, username, role FROM users ORDER BY role ASC, username ASC;")
     users = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return jsonify({"users": users})
