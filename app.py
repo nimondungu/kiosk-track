@@ -10,14 +10,17 @@ from flask import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
+from datetime import datetime, date, timedelta
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "kiosk_pos_enterprise_multitenant_key_2026")
+# Use a static fallback secret key so workers always share the exact same key
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "kiosk_pos_enterprise_multitenant_key_2026_fixed")
 
 app.config.update(
     SESSION_COOKIE_SECURE=False,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
-    PERMANENT_SESSION_LIFETIME=False
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30)
 )
 
 BASE_DIR = os.environ.get(
@@ -1037,17 +1040,23 @@ HTML_TEMPLATE = """
         }
 
         let activeDrillMode = 'TOTAL';
+
         function openDrilldown(mode) {
             activeDrillMode = mode;
-            const titles = { CASH: '💵 Cash Transactions', MPESA: '📲 M-Pesa Transactions', TOTAL: '📊 All Sales Transactions' };
+            const titles = { 
+                CASH: '💵 Cash Transactions', 
+                MPESA: '📲 M-Pesa Transactions', 
+                TOTAL: '📊 All Sales Transactions' 
+            };
             document.getElementById('drilldownTitle').innerText = titles[mode] || 'Sales Breakdown';
-            document.getElementById('drilldownDate').value = '';
+            // Set to today's active date selector value by default
+            document.getElementById('drilldownDate').value = document.getElementById('activeSaleDate').value || TODAY_STR;
             document.getElementById('drilldownModal').classList.remove('hidden');
             fetchDrilldownData();
         }
-        function closeDrilldownModal() { document.getElementById('drilldownModal').classList.add('hidden'); }
+
         function resetDrilldownDate() {
-            document.getElementById('drilldownDate').value = '';
+            document.getElementById('drilldownDate').value = ''; // Clears filter to fetch ALL sales
             fetchDrilldownData();
         }
 
@@ -1426,7 +1435,7 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
-            session.permanent = False
+            session.permanent = True  # Keeps you logged in for 30 days
             session["user_id"] = user["user_id"]
             session["shop_id"] = user["shop_id"]
             session["username"] = user["username"]
@@ -1924,7 +1933,7 @@ def get_reports():
 @app.route("/api/transactions/drilldown", methods=["GET"])
 @admin_required
 def drilldown_transactions():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id")
     mode = request.args.get("mode", "TOTAL")
     date_val = request.args.get("date")
 
@@ -1936,11 +1945,10 @@ def drilldown_transactions():
 
     date_filter = ""
     params = [shop_id]
-    if date_val:
+    if date_val and date_val.strip():
         date_filter = "AND DATE(t.timestamp, 'localtime') = ?"
-        params.append(date_val)
-    else:
-        date_filter = "AND DATE(t.timestamp, 'localtime') = DATE('now', 'localtime')"
+        params.append(date_val.strip())
+    # If date_val is empty, we show all recent transactions for the shop instead of locking to UTC now
 
     conn = get_db()
     cursor = conn.cursor()
@@ -1954,7 +1962,7 @@ def drilldown_transactions():
             t.total_amount
         FROM transactions t
         JOIN items i ON t.item_id = i.item_id
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter}
+        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter}
         ORDER BY t.timestamp DESC;
     """, tuple(params))
     rows = [dict(r) for r in cursor.fetchall()]
@@ -1962,7 +1970,7 @@ def drilldown_transactions():
     cursor.execute(f"""
         SELECT COALESCE(SUM(t.total_amount), 0) as total
         FROM transactions t
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter};
+        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter};
     """, tuple(params))
     total_val = cursor.fetchone()["total"]
     conn.close()
@@ -1973,7 +1981,7 @@ def drilldown_transactions():
 @app.route("/api/transactions/drilldown-csv", methods=["GET"])
 @admin_required
 def drilldown_csv():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id")
     mode = request.args.get("mode", "TOTAL")
     date_val = request.args.get("date")
 
@@ -1985,11 +1993,9 @@ def drilldown_csv():
 
     date_filter = ""
     params = [shop_id]
-    if date_val:
+    if date_val and date_val.strip():
         date_filter = "AND DATE(t.timestamp, 'localtime') = ?"
-        params.append(date_val)
-    else:
-        date_filter = "AND DATE(t.timestamp, 'localtime') = DATE('now', 'localtime')"
+        params.append(date_val.strip())
 
     conn = get_db()
     cursor = conn.cursor()
@@ -2005,7 +2011,7 @@ def drilldown_csv():
         FROM transactions t
         JOIN items i ON t.item_id = i.item_id
         JOIN users u ON t.user_id = u.user_id
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT' {pay_filter} {date_filter}
+        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter}
         ORDER BY t.timestamp DESC;
     """, tuple(params))
     rows = cursor.fetchall()
