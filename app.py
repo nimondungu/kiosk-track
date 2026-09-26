@@ -2,7 +2,7 @@ import csv
 import io
 import os
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from functools import wraps
 from flask import (
     Flask, render_template_string, request, jsonify, 
@@ -10,11 +10,8 @@ from flask import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from datetime import datetime, date, timedelta
-
 app = Flask(__name__)
-# A constant secret key ensures multiple WSGI workers never invalidate each other's cookies
-app.secret_key = "kiosk_pos_enterprise_multitenant_key_2026_fixed_key"
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "kiosk_pos_enterprise_multitenant_key_2026_fixed_key")
 
 app.config.update(
     SESSION_COOKIE_NAME='kiosk_session',
@@ -32,7 +29,7 @@ DB_FILE = "/home/kiosktrack/kiosk-track/shop.db" if os.path.exists("/home/kioskt
 
 def init_db():
     os.makedirs(os.path.dirname(os.path.abspath(DB_FILE)), exist_ok=True)
-    conn = sqlite3.connect(DB_FILE, timeout=15)
+    conn = sqlite3.connect(DB_FILE, timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     cursor = conn.cursor()
@@ -114,7 +111,7 @@ def init_db():
 
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE, timeout=15)
+    conn = sqlite3.connect(DB_FILE, timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
@@ -216,6 +213,7 @@ HTML_TEMPLATE = """
 
     <main class="max-w-3xl mx-auto px-3 sm:px-4 pt-3 pb-28">
 
+        <!-- COUNTER SCREEN -->
         <section id="screen-counter" class="tab-screen">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 mb-3 shadow-sm flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div class="flex items-center gap-2">
@@ -244,6 +242,7 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
+            <!-- Fast Search -->
             <div class="sticky top-[61px] z-30 mb-3">
                 <div class="relative shadow-sm rounded-2xl">
                     <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
@@ -255,6 +254,7 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
+            <!-- Items List -->
             <div class="space-y-2.5" id="counterList">
                 {% for item in items %}
                 <div class="counter-card bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 hover:border-slate-300 dark:hover:border-slate-700 transition relative shadow-sm" 
@@ -288,7 +288,8 @@ HTML_TEMPLATE = """
                                     class="bg-green-600 hover:bg-green-500 text-white active:scale-95 hover:scale-105 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
                                 <span>📲</span> <span data-i18n="btn_mpesa">M-Pesa</span>
                             </button>
-                            <button onclick="openSplitModal({{ item['item_id'] }}, '{{ item['name'] }}', {{ item['unit_price'] }})" 
+                            <!-- Escaped with |tojson to prevent apostrophe quotation breakages -->
+                            <button onclick="openSplitModal({{ item['item_id'] }}, {{ item['name']|tojson }}, {{ item['unit_price'] }})" 
                                     class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
                                 <span>⚡</span> <span data-i18n="btn_split">Split</span>
                             </button>
@@ -316,6 +317,7 @@ HTML_TEMPLATE = """
         </section>
 
         {% if session.get('role') == 'admin' %}
+        <!-- REPORTS SCREEN -->
         <section id="screen-reports" class="tab-screen hidden">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm space-y-4">
                 <div class="flex flex-wrap items-center justify-between gap-3">
@@ -407,6 +409,7 @@ HTML_TEMPLATE = """
             </div>
         </section>
 
+        <!-- STOCK TAKE SCREEN -->
         <section id="screen-audit" class="tab-screen hidden">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 mb-4 shadow-sm">
                 <div class="mb-4">
@@ -442,6 +445,7 @@ HTML_TEMPLATE = """
         </section>
         {% endif %}
 
+        <!-- PROFILE SCREEN -->
         <section id="screen-profile" class="tab-screen hidden">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 mb-6 shadow-sm space-y-6">
                 
@@ -479,7 +483,7 @@ HTML_TEMPLATE = """
 
                         <div class="flex items-center justify-between py-1">
                             <span class="font-semibold text-slate-700 dark:text-slate-300" data-i18n="app_version">App Version</span>
-                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v2.8</span>
+                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v2.8 Enterprise</span>
                         </div>
                     </div>
 
@@ -518,17 +522,12 @@ HTML_TEMPLATE = """
                     <a href="/logout" class="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-3 rounded-xl transition text-center shadow-lg flex items-center justify-center gap-2 hover:scale-[1.01]">
                         <span data-i18n="btn_logout">Log out</span>
                     </a>
-
-                    <div class="text-center pt-2 space-y-0.5">
-                        <p class="text-[10px] text-slate-400 font-semibold">© 2026 Kiosk Track. All rights reserved.</p>
-                        <p class="text-[9px] text-emerald-600 dark:text-emerald-400 font-bold" data-i18n="footer_empower">Empowering Businesses WorldWide.</p>
-                    </div>
                 </div>
 
             </div>
         </section>
 
-        <!-- Drilldown Modal -->
+        <!-- DRILLDOWN MODAL -->
         <div id="drilldownModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-lg p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -541,7 +540,7 @@ HTML_TEMPLATE = """
                 
                 <div class="flex items-center gap-2 bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
                     <span class="font-bold text-slate-400 uppercase text-[10px]">Filter Date:</span>
-                    <input type="date" id="drilldownDate" onchange="fetchDrilldownData()" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1 font-bold">
+                    <input type="date" id="drilldownDate" onchange="fetchDrilldownData()" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1 font-bold text-slate-900 dark:text-white">
                     <button onclick="resetDrilldownDate()" class="text-[10px] font-bold text-indigo-500 hover:underline ml-auto">All Range</button>
                 </div>
 
@@ -573,7 +572,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Units Sold Modal -->
+        <!-- UNITS SOLD MODAL -->
         <div id="unitsSoldModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -600,7 +599,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Closing Stock Modal -->
+        <!-- CLOSING STOCK MODAL -->
         <div id="closingStockModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -628,7 +627,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Staff Modal -->
+        <!-- STAFF MANAGEMENT MODAL -->
         <div id="staffModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -657,7 +656,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Add Item Modal -->
+        <!-- ADD ITEM MODAL -->
         <div id="addItemModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -687,7 +686,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Split Modal -->
+        <!-- SPLIT PAYMENT MODAL -->
         <div id="splitModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
                 <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
@@ -716,6 +715,7 @@ HTML_TEMPLATE = """
 
     </main>
 
+    <!-- BOTTOM NAVBAR -->
     <nav class="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800 pb-[env(safe-area-inset-bottom)] shadow-lg">
         <div class="max-w-md mx-auto grid {% if session.get('role') == 'admin' %}grid-cols-4{% else %}grid-cols-2{% endif %} h-16">
             <button onclick="switchTab('counter', this)" class="nav-tab flex flex-col items-center justify-center gap-1 text-emerald-600 dark:text-emerald-400">
@@ -752,12 +752,12 @@ HTML_TEMPLATE = """
         let deferredPrompt = null;
 
         const translations = {
-            en: { staff: "Staff", item: "Item", entry_date: "📅 Entry Date:", live_mode: "Live Mode (Deducts Stock)", cash: "💵 Cash", mpesa: "📲 M-Pesa", total_sales: "📊 Total Sales", search_placeholder: "Search items...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Split", btn_return: "Return", btn_in: "+ In", reports_title: "Sales & Staff Shifts", reports_subtitle: "Historical performance and staff handovers", today: "Today", yesterday: "Yesterday", week: "7 Days", month: "30 Days", revenue: "Revenue", units_sold: "Units Sold", raw_export: "📥 Flexible Range CSV Export:", csv_year: "Last Year CSV", csv_all: "All-Time CSV", staff_breakdown: "Staff Shift Breakdown", th_staff: "Staff", th_role: "Role", th_sales: "Sales", th_cash: "Cash", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Physical Stock Calibration", stock_subtitle: "Setting counts here overrides your shelf total directly", current_count: "Current Count", btn_set: "Set", store_logo: "Store Logo / Picture", btn_upload: "Upload", btn_remove: "Remove Logo", share_store: "Share Store Link", share_desc: "Copy your store link or share instantly with customers and friends via WhatsApp.", btn_copy: "Copy", btn_whatsapp: "Share via WhatsApp", app_version: "App Version", btn_close: "Close", btn_logout: "Log out", manage_cashiers: "Manage Cashiers", current_team: "Current Team", create_cashier: "Create New Cashier", username: "Username", password_pin: "Password / PIN", btn_create: "Create Cashier", add_product: "Add New Product", product_name: "Product Name", selling_price: "Selling Price (KES)", initial_stock: "Initial Stock", btn_cancel: "Cancel", btn_save: "Save", cash_kes: "Cash (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Complete Sale", nav_counter: "Counter", nav_reports: "Reports", nav_stocktake: "Stock Take", nav_profile: "Profile", install_app_btn: "Install App on Phone", closing_stock_card: "Remaining Closing Stock", closing_stock_sub: "Click to inspect remaining items & valuation", start_date: "Start Date", end_date: "End Date", settings_header: "App Settings & Preferences", theme_pref: "Theme Mode", footer_empower: "Empowering Businesses WorldWide." },
-            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi", footer_empower: "Kuwezesha Biashara Duniani Kote." },
-            fr: { staff: "Personnel", item: "Article", entry_date: "📅 Date:", live_mode: "Mode en direct", cash: "💵 Espèces", mpesa: "📲 M-Pesa", total_sales: "📊 Ventes Totales", search_placeholder: "Rechercher...", btn_cash: "Espèces", btn_mpesa: "M-Pesa", btn_split: "Diviser", btn_return: "Retour", btn_in: "+ Entrée", reports_title: "Rapports", reports_subtitle: "Performance historique", today: "Aujourd'hui", yesterday: "Hier", week: "7 Jours", month: "30 Jours", revenue: "Revenu", units_sold: "Unités vendues", raw_export: "📥 Exporter Données:", csv_year: "CSV An Dernier", csv_all: "CSV Tout", staff_breakdown: "Détail du Personnel", th_staff: "Personnel", th_role: "Rôle", th_sales: "Ventes", th_cash: "Espèces", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibration Stock", stock_subtitle: "Modifie directement le stock", current_count: "Stock Actuel", btn_set: "Définir", store_logo: "Logo du Magasin", btn_upload: "Télécharger", btn_remove: "Supprimer Logo", share_store: "Partager le lien", share_desc: "Copiez le lien ou partagez avec vos clients via WhatsApp.", btn_copy: "Copier", btn_whatsapp: "Partager via WhatsApp", app_version: "Version", btn_close: "Fermer", btn_logout: "Déconnexion", manage_cashiers: "Gérer Caissiers", current_team: "Équipe", create_cashier: "Créer Caissier", username: "Nom d'utilisateur", password_pin: "Mot de passe", btn_create: "Créer", add_product: "Ajouter Article", product_name: "Nom", selling_price: "Prix (KES)", initial_stock: "Stock Initial", btn_cancel: "Annuler", btn_save: "Enregistrer", cash_kes: "Espèces (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Valider", nav_counter: "Comptoir", nav_reports: "Rapports", nav_stocktake: "Inventaire", nav_profile: "Profil", install_app_btn: "Installer l'application", closing_stock_card: "Stock de Clôture", closing_stock_sub: "Inspecter le stock restant", start_date: "Date Début", end_date: "Date Fin", settings_header: "Paramètres de l'application", theme_pref: "Mode Thème", footer_empower: "Autonomiser les entreprises du monde entier." },
-            es: { staff: "Personal", item: "Artículo", entry_date: "📅 Fecha:", live_mode: "Modo en Vivo", cash: "💵 Efectivo", mpesa: "📲 M-Pesa", total_sales: "📊 Ventas Totales", search_placeholder: "Buscar...", btn_cash: "Efectivo", btn_mpesa: "M-Pesa", btn_split: "Dividir", btn_return: "Devolver", btn_in: "+ Entrar", reports_title: "Reportes", reports_subtitle: "Rendimiento histórico", today: "Hoy", yesterday: "Ayer", week: "7 Días", month: "30 Días", revenue: "Ingresos", units_sold: "Unidades", raw_export: "📥 Exportar Datos:", csv_year: "CSV Año Pasado", csv_all: "CSV Todo", staff_breakdown: "Desglose del Personal", th_staff: "Personal", th_role: "Rol", th_sales: "Ventas", th_cash: "Efectivo", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibración de Stock", stock_subtitle: "Modifica el stock directamente", current_count: "Conteo Actual", btn_set: "Fijar", store_logo: "Logo de Tienda", btn_upload: "Subir", btn_remove: "Eliminar Logo", share_store: "Compartir Enlace", share_desc: "Copia el enlace o compártelo con tus clientes por WhatsApp.", btn_copy: "Copiar", btn_whatsapp: "Compartir por WhatsApp", app_version: "Versión", btn_close: "Cerrar", btn_logout: "Cerrar Sesión", manage_cashiers: "Gestionar Cajeros", current_team: "Equipo", create_cashier: "Crear Cajero", username: "Usuario", password_pin: "Contraseña", btn_create: "Crear", add_product: "Agregar Producto", product_name: "Nombre", selling_price: "Precio (KES)", initial_stock: "Stock Inicial", btn_cancel: "Cancelar", btn_save: "Guardar", cash_kes: "Efectivo (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Completar Venta", nav_counter: "Mostrador", nav_reports: "Reportes", nav_stocktake: "Inventario", nav_profile: "Perfil", install_app_btn: "Instalar Aplicación", closing_stock_card: "Stock Restante", closing_stock_sub: "Ver inventario actual", start_date: "Fecha Inicio", end_date: "Fecha Fin", settings_header: "Configuración de la App", theme_pref: "Modo de Tema", footer_empower: "Empoderando negocios en todo el mundo." },
-            ar: { staff: "الموظفين", item: "صنف", entry_date: "📅 تاريخ:", live_mode: "الوضع المباشر", cash: "💵 نقدي", mpesa: "📲 إمبيسا", total_sales: "📊 إجمالي المبيعات", search_placeholder: "بحث عن أصناف...", btn_cash: "نقدي", btn_mpesa: "إمبيسا", btn_split: "تقسيم", btn_return: "إرجاع", btn_in: "+ إدخال", reports_title: "التقارير", reports_subtitle: "الأداء التاريخي", today: "اليوم", yesterday: "أمس", week: "7 أيام", month: "30 يوم", revenue: "الإيرادات", units_sold: "الوحدات المباعة", raw_export: "📥 تصدير البيانات:", csv_year: "CSV العام الماضي", csv_all: "CSV الكل", staff_breakdown: "تفصيل ورديات الموظفين", th_staff: "الموظف", th_role: "الدور", th_sales: "المبيعات", th_cash: "نقدي", th_mpesa: "إمبيسا", th_total: "المجموع", stock_calibration: "مراجعة المخزون", stock_subtitle: "تعديل رصيد الرف مباشرة", current_count: "العدد الحالي", btn_set: "تعيين", store_logo: "شعار المتجر", btn_upload: "رفع", btn_remove: "إزالة الشعار", share_store: "مشاركة رابط المتجر", share_desc: "انسخ الرابط أو شاركه مع العملاء والأصدقاء عبر واتساب.", btn_copy: "نسخ", btn_whatsapp: "مشاركة عبر واتساب", app_version: "إصدار التطبيق", btn_close: "إغلاق", btn_logout: "تسجيل الخروج", manage_cashiers: "إدارة الكاشير", current_team: "الفريق الحالي", create_cashier: "إنشاء كاشير", username: "اسم المستخدم", password_pin: "كلمة المرور / الرمز", btn_create: "إنشاء", add_product: "إضافة منتج", product_name: "اسم المنتج", selling_price: "سعر البيع", initial_stock: "المخزون الأولي", btn_cancel: "إلغاء", btn_save: "حفظ", cash_kes: "نقدي", mpesa_kes: "إمبيسا", btn_complete: "إتمام البيع", nav_counter: "العداد", nav_reports: "التقارير", nav_stocktake: "جرد المخزون", nav_profile: "الملف الشخصي", install_app_btn: "تثبيت التطبيق على الهاتف", closing_stock_card: "المخزون المتبقي", closing_stock_sub: "عرض تقييم المخزون", start_date: "تاريخ البدء", end_date: "تاريخ الانتهاء", settings_header: "إعدادات التطبيق", theme_pref: "وضع المظهر", footer_empower: "تمكين الشركات في جميع أنحاء العالم." },
-            zh: { staff: "员工", item: "商品", entry_date: "📅 日期：", live_mode: "实时模式", cash: "💵 现金", mpesa: "📲 移动支付", total_sales: "📊 总销售额", search_placeholder: "搜索商品...", btn_cash: "现金", btn_mpesa: "移动支付", btn_split: "拆分", btn_return: "退货", btn_in: "+ 入库", reports_title: "销售与班次", reports_subtitle: "历史业绩", today: "今天", yesterday: "昨天", week: "7天", month: "30天", revenue: "收入", units_sold: "销售数量", raw_export: "📥 导出原始数据:", csv_year: "去年CSV", csv_all: "全部CSV", staff_breakdown: "员工班次明细", th_staff: "员工", th_role: "角色", th_sales: "销售", th_cash: "现金", th_mpesa: "移动支付", th_total: "总计", stock_calibration: "库存校准", stock_subtitle: "直接覆盖货架库存", current_count: "当前盘点", btn_set: "设置", store_logo: "店铺标志", btn_upload: "上传", btn_remove: "移除Logo", share_store: "分享店铺链接", share_desc: "复制您的店铺链接，或通过WhatsApp快速分享给客户和好友。", btn_copy: "复制", btn_whatsapp: "通过WhatsApp分享", app_version: "应用版本", btn_close: "关闭", btn_logout: "退出登录", manage_cashiers: "管理收银员", current_team: "当前团队", create_cashier: "新建收银员", username: "用户名", password_pin: "密码/PIN", btn_create: "创建", add_product: "添加新商品", product_name: "商品名称", selling_price: "售价", initial_stock: "初始库存", btn_cancel: "取消", btn_save: "保存", cash_kes: "现金", mpesa_kes: "移动支付", btn_complete: "完成销售", nav_counter: "收银台", nav_reports: "报表", nav_stocktake: "盘点", nav_profile: "个人资料", install_app_btn: "在手机上安装应用", closing_stock_card: "剩余库存", closing_stock_sub: "查看剩余库存及估值", start_date: "开始日期", end_date: "结束日期", settings_header: "应用设置", theme_pref: "主题模式", footer_empower: "赋能全球企业。" }
+            en: { staff: "Staff", item: "Item", entry_date: "📅 Entry Date:", live_mode: "Live Mode (Deducts Stock)", cash: "💵 Cash", mpesa: "📲 M-Pesa", total_sales: "📊 Total Sales", search_placeholder: "Search items...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Split", btn_return: "Return", btn_in: "+ In", reports_title: "Sales & Staff Shifts", reports_subtitle: "Historical performance and staff handovers", today: "Today", yesterday: "Yesterday", week: "7 Days", month: "30 Days", revenue: "Revenue", units_sold: "Units Sold", raw_export: "📥 Flexible Range CSV Export:", csv_year: "Last Year CSV", csv_all: "All-Time CSV", staff_breakdown: "Staff Shift Breakdown", th_staff: "Staff", th_role: "Role", th_sales: "Sales", th_cash: "Cash", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Physical Stock Calibration", stock_subtitle: "Setting counts here overrides your shelf total directly", current_count: "Current Count", btn_set: "Set", store_logo: "Store Logo / Picture", btn_upload: "Upload", btn_remove: "Remove Logo", share_store: "Share Store Link", share_desc: "Copy your store link or share instantly with customers and friends via WhatsApp.", btn_copy: "Copy", btn_whatsapp: "Share via WhatsApp", app_version: "App Version", btn_close: "Close", btn_logout: "Log out", manage_cashiers: "Manage Cashiers", current_team: "Current Team", create_cashier: "Create New Cashier", username: "Username", password_pin: "Password / PIN", btn_create: "Create Cashier", add_product: "Add New Product", product_name: "Product Name", selling_price: "Selling Price (KES)", initial_stock: "Initial Stock", btn_cancel: "Cancel", btn_save: "Save", cash_kes: "Cash (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Complete Sale", nav_counter: "Counter", nav_reports: "Reports", nav_stocktake: "Stock Take", nav_profile: "Profile", install_app_btn: "Install App on Phone", closing_stock_card: "Remaining Closing Stock", closing_stock_sub: "Click to inspect remaining items & valuation", start_date: "Start Date", end_date: "End Date", settings_header: "App Settings & Preferences", theme_pref: "Theme Mode" },
+            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi" },
+            fr: { staff: "Personnel", item: "Article", entry_date: "📅 Date:", live_mode: "Mode en direct", cash: "💵 Espèces", mpesa: "📲 M-Pesa", total_sales: "📊 Ventes Totales", search_placeholder: "Rechercher...", btn_cash: "Espèces", btn_mpesa: "M-Pesa", btn_split: "Diviser", btn_return: "Retour", btn_in: "+ Entrée", reports_title: "Rapports", reports_subtitle: "Performance historique", today: "Aujourd'hui", yesterday: "Hier", week: "7 Jours", month: "30 Jours", revenue: "Revenu", units_sold: "Unités vendues", raw_export: "📥 Exporter Données:", csv_year: "CSV An Dernier", csv_all: "CSV Tout", staff_breakdown: "Détail du Personnel", th_staff: "Personnel", th_role: "Rôle", th_sales: "Ventes", th_cash: "Espèces", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibration Stock", stock_subtitle: "Modifie directement le stock", current_count: "Stock Actuel", btn_set: "Définir", store_logo: "Logo du Magasin", btn_upload: "Télécharger", btn_remove: "Supprimer Logo", share_store: "Partager le lien", share_desc: "Copiez le lien ou partagez avec vos clients via WhatsApp.", btn_copy: "Copier", btn_whatsapp: "Partager via WhatsApp", app_version: "Version", btn_close: "Fermer", btn_logout: "Déconnexion", manage_cashiers: "Gérer Caissiers", current_team: "Équipe", create_cashier: "Créer Caissier", username: "Nom d'utilisateur", password_pin: "Mot de passe", btn_create: "Créer", add_product: "Ajouter Article", product_name: "Nom", selling_price: "Prix (KES)", initial_stock: "Stock Initial", btn_cancel: "Annuler", btn_save: "Enregistrer", cash_kes: "Espèces (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Valider", nav_counter: "Comptoir", nav_reports: "Rapports", nav_stocktake: "Inventaire", nav_profile: "Profil", install_app_btn: "Installer l'application", closing_stock_card: "Stock de Clôture", closing_stock_sub: "Inspecter le stock restant", start_date: "Date Début", end_date: "Date Fin", settings_header: "Paramètres de l'application", theme_pref: "Mode Thème" },
+            es: { staff: "Personal", item: "Artículo", entry_date: "📅 Fecha:", live_mode: "Modo en Vivo", cash: "💵 Efectivo", mpesa: "📲 M-Pesa", total_sales: "📊 Ventas Totales", search_placeholder: "Buscar...", btn_cash: "Efectivo", btn_mpesa: "M-Pesa", btn_split: "Dividir", btn_return: "Devolver", btn_in: "+ Entrar", reports_title: "Reportes", reports_subtitle: "Rendimiento histórico", today: "Hoy", yesterday: "Ayer", week: "7 Días", month: "30 Días", revenue: "Ingresos", units_sold: "Unidades", raw_export: "📥 Exportar Datos:", csv_year: "CSV Año Pasado", csv_all: "CSV Todo", staff_breakdown: "Desglose del Personal", th_staff: "Personal", th_role: "Rol", th_sales: "Ventas", th_cash: "Efectivo", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibración de Stock", stock_subtitle: "Modifica el stock directamente", current_count: "Conteo Actual", btn_set: "Fijar", store_logo: "Logo de Tienda", btn_upload: "Subir", btn_remove: "Eliminar Logo", share_store: "Compartir Enlace", share_desc: "Copia el enlace o compártelo con tus clientes por WhatsApp.", btn_copy: "Copiar", btn_whatsapp: "Compartir por WhatsApp", app_version: "Versión", btn_close: "Cerrar", btn_logout: "Cerrar Sesión", manage_cashiers: "Gestionar Cajeros", current_team: "Equipo", create_cashier: "Crear Cajero", username: "Usuario", password_pin: "Contraseña", btn_create: "Crear", add_product: "Agregar Producto", product_name: "Nombre", selling_price: "Precio (KES)", initial_stock: "Stock Inicial", btn_cancel: "Cancelar", btn_save: "Guardar", cash_kes: "Efectivo (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Completar Venta", nav_counter: "Mostrador", nav_reports: "Reportes", nav_stocktake: "Inventario", nav_profile: "Perfil", install_app_btn: "Instalar Aplicación", closing_stock_card: "Stock Restante", closing_stock_sub: "Ver inventario actual", start_date: "Fecha Inicio", end_date: "Fecha Fin", settings_header: "Configuración de la App", theme_pref: "Modo de Tema" },
+            ar: { staff: "الموظفين", item: "صنف", entry_date: "📅 تاريخ:", live_mode: "الوضع المباشر", cash: "💵 نقدي", mpesa: "📲 إمبيسا", total_sales: "📊 إجمالي المبيعات", search_placeholder: "بحث عن أصناف...", btn_cash: "نقدي", btn_mpesa: "إمبيسا", btn_split: "تقسيم", btn_return: "إرجاع", btn_in: "+ إدخال", reports_title: "التقارير", reports_subtitle: "الأداء التاريخي", today: "اليوم", yesterday: "أمس", week: "7 أيام", month: "30 يوم", revenue: "الإيرادات", units_sold: "الوحدات المباعة", raw_export: "📥 تصدير البيانات:", csv_year: "CSV العام الماضي", csv_all: "CSV الكل", staff_breakdown: "تفصيل ورديات الموظفين", th_staff: "الموظف", th_role: "الدور", th_sales: "المبيعات", th_cash: "نقدي", th_mpesa: "إمبيسا", th_total: "المجموع", stock_calibration: "مراجعة المخزون", stock_subtitle: "تعديل رصيد الرف مباشرة", current_count: "العدد الحالي", btn_set: "تعيين", store_logo: "شعار المتجر", btn_upload: "رفع", btn_remove: "إزالة الشعار", share_store: "مشاركة رابط المتجر", share_desc: "انسخ الرابط أو شاركه مع العملاء والأصدقاء عبر واتساب.", btn_copy: "نسخ", btn_whatsapp: "مشاركة عبر واتساب", app_version: "إصدار التطبيق", btn_close: "إغلاق", btn_logout: "تسجيل الخروج", manage_cashiers: "إدارة الكاشير", current_team: "الفريق الحالي", create_cashier: "إنشاء كاشير", username: "اسم المستخدم", password_pin: "كلمة المرور / الرمز", btn_create: "إنشاء", add_product: "إضافة منتج", product_name: "اسم المنتج", selling_price: "سعر البيع", initial_stock: "المخزون الأولي", btn_cancel: "إلغاء", btn_save: "حفظ", cash_kes: "نقدي", mpesa_kes: "إمبيسا", btn_complete: "إتمام البيع", nav_counter: "العداد", nav_reports: "التقارير", nav_stocktake: "جرد المخزون", nav_profile: "الملف الشخصي", install_app_btn: "تثبيت التطبيق على الهاتف", closing_stock_card: "المخزون المتبقي", closing_stock_sub: "عرض تقييم المخزون", start_date: "تاريخ البدء", end_date: "تاريخ الانتهاء", settings_header: "إعدادات التطبيق", theme_pref: "وضع المظهر" },
+            zh: { staff: "员工", item: "商品", entry_date: "📅 日期：", live_mode: "实时模式", cash: "💵 现金", mpesa: "📲 移动支付", total_sales: "📊 总销售额", search_placeholder: "搜索商品...", btn_cash: "现金", btn_mpesa: "移动支付", btn_split: "拆分", btn_return: "退货", btn_in: "+ 入库", reports_title: "销售与班次", reports_subtitle: "历史业绩", today: "今天", yesterday: "昨天", week: "7天", month: "30天", revenue: "收入", units_sold: "销售数量", raw_export: "📥 导出原始数据:", csv_year: "去年CSV", csv_all: "全部CSV", staff_breakdown: "员工班次明细", th_staff: "员工", th_role: "角色", th_sales: "销售", th_cash: "现金", th_mpesa: "移动支付", th_total: "总计", stock_calibration: "库存校准", stock_subtitle: "直接覆盖货架库存", current_count: "当前盘点", btn_set: "设置", store_logo: "店铺标志", btn_upload: "上传", btn_remove: "移除Logo", share_store: "分享店铺链接", share_desc: "复制您的店铺链接，或通过WhatsApp快速分享给客户和好友。", btn_copy: "复制", btn_whatsapp: "通过WhatsApp分享", app_version: "应用版本", btn_close: "关闭", btn_logout: "退出登录", manage_cashiers: "管理收银员", current_team: "当前团队", create_cashier: "新建收银员", username: "用户名", password_pin: "密码/PIN", btn_create: "创建", add_product: "添加新商品", product_name: "商品名称", selling_price: "售价", initial_stock: "初始库存", btn_cancel: "取消", btn_save: "保存", cash_kes: "现金", mpesa_kes: "移动支付", btn_complete: "完成销售", nav_counter: "收银台", nav_reports: "报表", nav_stocktake: "盘点", nav_profile: "个人资料", install_app_btn: "在手机上安装应用", closing_stock_card: "剩余库存", closing_stock_sub: "查看剩余库存及估值", start_date: "开始日期", end_date: "结束日期", settings_header: "应用设置", theme_pref: "主题模式" }
         };
 
         function changeLanguage(lang) {
@@ -773,7 +773,6 @@ HTML_TEMPLATE = """
             });
         }
 
-        // Automatically load server logo when opening app on Web or Phone
         window.addEventListener('DOMContentLoaded', () => {
             const savedLang = localStorage.getItem('kiosk_lang') || 'en';
             const langEl = document.getElementById('langSelect');
@@ -792,7 +791,6 @@ HTML_TEMPLATE = """
                 if (themeIcon) themeIcon.innerText = '🌙';
             }
 
-            // Fetch cloud logo from database
             fetchServerLogo();
         });
 
@@ -810,7 +808,6 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Compresses camera/gallery photos so uploads work fast on both phone and web
         function handleAvatarUpload(event) {
             const file = event.target.files[0];
             if (!file) return;
@@ -821,14 +818,12 @@ HTML_TEMPLATE = """
             reader.onload = function(e) {
                 const img = new Image();
                 img.onload = function() {
-                    // Resize to 300x300 square thumbnail using canvas
                     const canvas = document.createElement('canvas');
                     const size = 300;
                     canvas.width = size;
                     canvas.height = size;
                     const ctx = canvas.getContext('2d');
 
-                    // Center-crop square
                     const minDim = Math.min(img.width, img.height);
                     const startX = (img.width - minDim) / 2;
                     const startY = (img.height - minDim) / 2;
@@ -836,7 +831,6 @@ HTML_TEMPLATE = """
                     ctx.drawImage(img, startX, startY, minDim, minDim, 0, 0, size, size);
                     const compressedBase64 = canvas.toDataURL('image/jpeg', 0.85);
 
-                    // Save to cloud database
                     fetch('/api/store/logo', {
                         method: 'POST',
                         credentials: 'same-origin',
@@ -847,7 +841,7 @@ HTML_TEMPLATE = """
                     .then(data => {
                         if (data.success) {
                             applyAvatar(compressedBase64);
-                            showToast("Store logo updated and synced to all devices!");
+                            showToast("Store logo updated and synced!");
                         } else {
                             showToast("Failed to save logo", false);
                         }
@@ -996,6 +990,7 @@ HTML_TEMPLATE = """
             const saleDate = document.getElementById('activeSaleDate').value;
             const res = await fetch('/api/sale', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ item_id: itemId, quantity: qty, payment_method: payment, sale_date: saleDate })
             });
@@ -1035,6 +1030,7 @@ HTML_TEMPLATE = """
             const saleDate = document.getElementById('activeSaleDate').value;
             const res = await fetch('/api/sale/split', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ item_id: activeSplitId, quantity: activeSplitQty, cash_amount: c, mpesa_amount: m, sale_date: saleDate })
             });
@@ -1055,6 +1051,7 @@ HTML_TEMPLATE = """
             const q = parseInt(document.getElementById(`qty-${id}`).value) || 1;
             const res = await fetch('/api/sale/reverse', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ item_id: id, quantity: q })
             });
@@ -1075,6 +1072,7 @@ HTML_TEMPLATE = """
             }
             const res = await fetch('/api/stocktake/update-count', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ item_id: id, counted_quantity: val })
             });
@@ -1091,6 +1089,7 @@ HTML_TEMPLATE = """
             const q = parseInt(document.getElementById(`restock-qty-${id}`).value) || 0;
             const res = await fetch('/api/restock', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ item_id: id, quantity: q })
             });
@@ -1110,7 +1109,7 @@ HTML_TEMPLATE = """
         }
 
         async function loadReports(range) {
-            const res = await fetch(`/api/reports?range=${range}`);
+            const res = await fetch(`/api/reports?range=${range}`, { credentials: 'same-origin' });
             const d = await res.json();
             document.getElementById('repTotalRev').innerText = `KES ${Math.round(d.summary.total_revenue).toLocaleString()}`;
             document.getElementById('repTotalUnits').innerText = `${d.summary.total_units} pcs`;
@@ -1144,14 +1143,13 @@ HTML_TEMPLATE = """
                 TOTAL: '📊 All Sales Transactions' 
             };
             document.getElementById('drilldownTitle').innerText = titles[mode] || 'Sales Breakdown';
-            // Set to today's active date selector value by default
             document.getElementById('drilldownDate').value = document.getElementById('activeSaleDate').value || TODAY_STR;
             document.getElementById('drilldownModal').classList.remove('hidden');
             fetchDrilldownData();
         }
 
         function resetDrilldownDate() {
-            document.getElementById('drilldownDate').value = ''; // Clears filter to fetch ALL sales
+            document.getElementById('drilldownDate').value = '';
             fetchDrilldownData();
         }
 
@@ -1160,7 +1158,7 @@ HTML_TEMPLATE = """
             let url = `/api/transactions/drilldown?mode=${activeDrillMode}`;
             if (dateVal) url += `&date=${dateVal}`;
 
-            const res = await fetch(url);
+            const res = await fetch(url, { credentials: 'same-origin' });
             const d = await res.json();
             const totalVal = parseFloat(d.total_amount) || 0;
             document.getElementById('drilldownSubTotal').innerText = `Total: KES ${Math.round(totalVal).toLocaleString()}`;
@@ -1170,7 +1168,7 @@ HTML_TEMPLATE = """
                 tbody.innerHTML = d.transactions.map(tx => `
                     <tr>
                         <td class="py-2 font-mono text-[11px] text-slate-500">${tx.timestamp}</td>
-                        <td class="py-2 font-bold">${tx.product_name}</td>
+                        <td class="py-2 font-bold text-slate-900 dark:text-white">${tx.product_name}</td>
                         <td class="py-2">${tx.quantity}</td>
                         <td class="py-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${tx.payment_method === 'CASH' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400' : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400'}">${tx.payment_method}</span></td>
                         <td class="py-2 font-black font-mono">KES ${Math.round(parseFloat(tx.total_amount) || 0).toLocaleString()}</td>
@@ -1190,13 +1188,13 @@ HTML_TEMPLATE = """
 
         async function openUnitsSoldModal() {
             document.getElementById('unitsSoldModal').classList.remove('hidden');
-            const res = await fetch('/api/reports/units-sold');
+            const res = await fetch('/api/reports/units-sold', { credentials: 'same-origin' });
             const d = await res.json();
             const tbody = document.getElementById('unitsSoldTableBody');
             if (d.units && d.units.length > 0) {
                 tbody.innerHTML = d.units.map(u => `
                     <tr>
-                        <td class="py-2.5 font-bold">${u.product_name}</td>
+                        <td class="py-2.5 font-bold text-slate-900 dark:text-white">${u.product_name}</td>
                         <td class="py-2.5 font-mono">${u.total_units} pcs</td>
                         <td class="py-2.5 font-black font-mono text-emerald-600 dark:text-emerald-400">KES ${Math.round(u.total_sales).toLocaleString()}</td>
                     </tr>
@@ -1209,13 +1207,13 @@ HTML_TEMPLATE = """
 
         async function openClosingStockModal() {
             document.getElementById('closingStockModal').classList.remove('hidden');
-            const res = await fetch('/api/reports/closing-stock');
+            const res = await fetch('/api/reports/closing-stock', { credentials: 'same-origin' });
             const d = await res.json();
             const tbody = document.getElementById('closingStockTableBody');
             if (d.stock && d.stock.length > 0) {
                 tbody.innerHTML = d.stock.map(s => `
                     <tr>
-                        <td class="py-2.5 font-bold">${s.product_name}</td>
+                        <td class="py-2.5 font-bold text-slate-900 dark:text-white">${s.product_name}</td>
                         <td class="py-2.5 font-mono">${s.current_stock} pcs</td>
                         <td class="py-2.5 font-black font-mono text-sky-600 dark:text-sky-400">KES ${Math.round(s.valuation).toLocaleString()}</td>
                     </tr>
@@ -1237,58 +1235,13 @@ HTML_TEMPLATE = """
             window.location.href = `/api/reports/export-csv?start=${start}&end=${end}`;
         }
 
-        async function handleAvatarUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = async function(e) {
-                const base64String = e.target.result;
-                await fetch('/api/store/logo', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ logo: base64String })
-                });
-                applyAvatar(base64String);
-                showToast("Store logo updated & synced!");
-            };
-            reader.readAsDataURL(file);
-        }
-
-        function applyAvatar(src) {
-            ['navAvatarImage', 'avatarImage'].forEach(id => {
-                const img = document.getElementById(id);
-                if(img) { img.src = src; img.classList.remove('hidden'); }
-            });
-            ['navAvatarInitials', 'avatarInitials'].forEach(id => {
-                const init = document.getElementById(id);
-                if(init) { init.classList.add('hidden'); }
-            });
-        }
-
-        async function removeAvatar() {
-            await fetch('/api/store/logo', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ logo: '' })
-            });
-            ['navAvatarImage', 'avatarImage'].forEach(id => {
-                const img = document.getElementById(id);
-                if(img) { img.src = ''; img.classList.add('hidden'); }
-            });
-            ['navAvatarInitials', 'avatarInitials'].forEach(id => {
-                const init = document.getElementById(id);
-                if(init) { init.classList.remove('hidden'); }
-            });
-            showToast("Store logo removed");
-        }
-
         async function openStaffModal() {
             document.getElementById('staffModal').classList.remove('hidden');
             const listEl = document.getElementById('existingStaffList');
             listEl.innerHTML = `<div class="py-3 text-center text-slate-400">Loading team...</div>`;
             
             try {
-                const res = await fetch('/api/staff/list');
+                const res = await fetch('/api/staff/list', { credentials: 'same-origin' });
                 if (!res.ok) {
                     let msg = `Request failed (${res.status})`;
                     if (res.status === 401 || res.status === 403) {
@@ -1334,6 +1287,7 @@ HTML_TEMPLATE = """
             if (!newPass) return;
             const res = await fetch('/api/staff/reset-password', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ user_id: userId, new_password: newPass })
             });
@@ -1351,13 +1305,14 @@ HTML_TEMPLATE = """
             }
             const res = await fetch('/api/staff/delete', {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ user_id: userId })
             });
             const d = await res.json();
             if (res.ok) {
                 showToast(`Cashier @${username} removed!`);
-                openStaffModal(); // refresh the list
+                openStaffModal();
             } else {
                 showToast(d.error || 'Failed to remove cashier', false);
             }
@@ -1393,17 +1348,56 @@ HTML_TEMPLATE = """
 
         function openAddItemModal() { document.getElementById('addItemModal').classList.remove('hidden'); }
         function closeAddItemModal() { document.getElementById('addItemModal').classList.add('hidden'); }
+
         async function submitNewItem() {
-            const name = document.getElementById('newItemName').value.trim();
-            const price = parseFloat(document.getElementById('newItemPrice').value);
-            const stock = parseInt(document.getElementById('newItemStock').value) || 0;
-            const res = await fetch('/api/items/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, unit_price: price, initial_stock: stock })
-            });
-            if(res.ok) { location.reload(); }
-            else { const d = await res.json(); showToast(d.error || 'Error adding item', false); }
+            const nameInput = document.getElementById('newItemName');
+            const priceInput = document.getElementById('newItemPrice');
+            const stockInput = document.getElementById('newItemStock');
+
+            const name = nameInput.value.trim();
+            const priceVal = priceInput.value.trim();
+            const stockVal = stockInput.value.trim();
+
+            if (!name) {
+                showToast("Please enter a product name", false);
+                return;
+            }
+
+            const price = parseFloat(priceVal);
+            if (isNaN(price) || price < 0) {
+                showToast("Please enter a valid price (e.g. 100)", false);
+                return;
+            }
+
+            const stock = stockVal === "" ? 0 : parseInt(stockVal);
+            if (isNaN(stock) || stock < 0) {
+                showToast("Initial stock must be a non-negative number", false);
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/items/add', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, unit_price: price, initial_stock: stock })
+                });
+                
+                const d = await res.json();
+                if (res.ok && d.success) {
+                    showToast(`Added ${name} successfully!`);
+                    closeAddItemModal();
+                    setTimeout(() => location.reload(), 300);
+                } else {
+                    if (res.status === 401 || res.status === 403) {
+                        showToast("Session expired. Please log out and back in.", false);
+                    } else {
+                        showToast(d.error || 'Error adding item', false);
+                    }
+                }
+            } catch (err) {
+                showToast("Network / Server error: " + err.message, false);
+            }
         }
     </script>
 </body>
@@ -1539,7 +1533,7 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
-            session.permanent = True   # Keeps session active for 30 days
+            session.permanent = True
             session["user_id"] = user["user_id"]
             session["shop_id"] = user["shop_id"]
             session["username"] = user["username"]
@@ -1616,11 +1610,11 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM items WHERE shop_id = ? AND is_active = 1 ORDER BY name ASC;", (shop_id,))
+    cursor.execute("SELECT * FROM items WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1 ORDER BY name ASC;", (shop_id,))
     items = cursor.fetchall()
 
     cursor.execute("""
@@ -1628,7 +1622,7 @@ def index():
             COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
             COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
         FROM transactions
-        WHERE shop_id = ? AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        WHERE (shop_id = ? OR shop_id = 1) AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
     """, (shop_id,))
     totals = cursor.fetchone()
     conn.close()
@@ -1653,7 +1647,6 @@ def store_logo():
     if request.method == "POST":
         data = request.get_json() or {}
         logo_data = data.get("logo", "")
-        # Update current shop and fallback shop_id 1 so all cashiers and devices see it
         cursor.execute("UPDATE shops SET store_logo = ? WHERE shop_id = ? OR shop_id = 1", (logo_data, shop_id))
         conn.commit()
         conn.close()
@@ -1740,7 +1733,6 @@ def delete_staff():
 
     conn = get_db()
     cursor = conn.cursor()
-    # Ensure the user being deleted belongs to this shop and is NOT an admin
     cursor.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
     target = cursor.fetchone()
     
@@ -1758,6 +1750,59 @@ def delete_staff():
     return jsonify({"success": True})
 
 
+@app.route("/api/items/add", methods=["POST"])
+@admin_required
+def add_new_item():
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    
+    if not name:
+        return jsonify({"error": "Product name is required"}), 400
+
+    try:
+        raw_price = data.get("unit_price")
+        price = float(raw_price) if raw_price is not None else 0.0
+    except (ValueError, TypeError):
+        return jsonify({"error": "Please enter a valid selling price"}), 400
+
+    try:
+        raw_stock = data.get("initial_stock")
+        stock = int(raw_stock) if raw_stock is not None else 0
+    except (ValueError, TypeError):
+        stock = 0
+
+    shop_id = session.get("shop_id") or 1
+    user_id = session.get("user_id") or 1
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO items (shop_id, name, unit_price, current_stock, is_active)
+            VALUES (?, ?, ?, ?, 1)
+        """, (shop_id, name, price, stock))
+        item_id = cursor.lastrowid
+
+        if stock > 0:
+            cursor.execute("""
+                INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+                VALUES (?, ?, ?, 'IN', 'N/A', ?, ?, ?)
+            """, (shop_id, user_id, item_id, stock, price, stock * price))
+
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Database busy or locked. Try again in a moment ({str(e)})"}), 500
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Failed to save item: {str(e)}"}), 500
+
+    conn.close()
+    return jsonify({"success": True})
+
+
 @app.route("/api/sale", methods=["POST"])
 @login_required
 def api_sale():
@@ -1766,12 +1811,12 @@ def api_sale():
     qty = int(data.get("quantity", 1))
     payment = data.get("payment_method", "CASH")
     sale_date = data.get("sale_date") or date.today().isoformat()
-    shop_id = session["shop_id"]
-    user_id = session["user_id"]
+    shop_id = session.get("shop_id") or 1
+    user_id = session.get("user_id") or 1
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND shop_id = ?", (item_id, shop_id))
+    cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
     item = cursor.fetchone()
 
     if not item:
@@ -1796,7 +1841,7 @@ def api_sale():
             COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
             COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
         FROM transactions
-        WHERE shop_id = ? AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        WHERE (shop_id = ? OR shop_id = 1) AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
     """, (shop_id,))
     totals = cursor.fetchone()
     conn.commit()
@@ -1819,12 +1864,12 @@ def api_sale_split():
     cash_amount = float(data.get("cash_amount", 0.0))
     mpesa_amount = float(data.get("mpesa_amount", 0.0))
     sale_date = data.get("sale_date") or date.today().isoformat()
-    shop_id = session["shop_id"]
-    user_id = session["user_id"]
+    shop_id = session.get("shop_id") or 1
+    user_id = session.get("user_id") or 1
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND shop_id = ?", (item_id, shop_id))
+    cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
     item = cursor.fetchone()
 
     if not item:
@@ -1852,7 +1897,7 @@ def api_sale_split():
             COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
             COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
         FROM transactions
-        WHERE shop_id = ? AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        WHERE (shop_id = ? OR shop_id = 1) AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
     """, (shop_id,))
     totals = cursor.fetchone()
     conn.commit()
@@ -1872,12 +1917,12 @@ def api_sale_reverse():
     data = request.get_json() or {}
     item_id = int(data.get("item_id", 0))
     qty = int(data.get("quantity", 1))
-    shop_id = session["shop_id"]
-    user_id = session["user_id"]
+    shop_id = session.get("shop_id") or 1
+    user_id = session.get("user_id") or 1
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND shop_id = ?", (item_id, shop_id))
+    cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
     item = cursor.fetchone()
 
     total = qty * item["unit_price"]
@@ -1902,12 +1947,12 @@ def update_stock_count():
     data = request.get_json() or {}
     item_id = int(data.get("item_id", 0))
     counted_qty = int(data.get("counted_quantity", 0))
-    shop_id = session["shop_id"]
-    user_id = session["user_id"]
+    shop_id = session.get("shop_id") or 1
+    user_id = session.get("user_id") or 1
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("UPDATE items SET current_stock = ? WHERE item_id = ? AND shop_id = ?", (counted_qty, item_id, shop_id))
+    cursor.execute("UPDATE items SET current_stock = ? WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (counted_qty, item_id, shop_id))
     
     cursor.execute("""
         INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
@@ -1925,12 +1970,12 @@ def api_restock():
     data = request.get_json() or {}
     item_id = int(data.get("item_id", 0))
     qty = int(data.get("quantity", 0))
-    shop_id = session["shop_id"]
-    user_id = session["user_id"]
+    shop_id = session.get("shop_id") or 1
+    user_id = session.get("user_id") or 1
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND shop_id = ?", (item_id, shop_id))
+    cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
     item = cursor.fetchone()
 
     cursor.execute("UPDATE items SET current_stock = current_stock + ? WHERE item_id = ?", (qty, item_id))
@@ -1948,39 +1993,10 @@ def api_restock():
     return jsonify({"success": True, "new_stock": new_stock})
 
 
-@app.route("/api/items/add", methods=["POST"])
-@admin_required
-def add_new_item():
-    data = request.get_json() or {}
-    name = (data.get("name") or "").strip()
-    price = float(data.get("unit_price", 0))
-    stock = int(data.get("initial_stock", 0))
-    shop_id = session["shop_id"]
-    user_id = session["user_id"]
-
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO items (shop_id, name, unit_price, current_stock, is_active)
-        VALUES (?, ?, ?, ?, 1)
-    """, (shop_id, name, price, stock))
-    item_id = cursor.lastrowid
-
-    if stock > 0:
-        cursor.execute("""
-            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-            VALUES (?, ?, ?, 'IN', 'N/A', ?, ?, ?)
-        """, (shop_id, user_id, item_id, stock, price, stock * price))
-
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True})
-
-
 @app.route("/api/reports", methods=["GET"])
 @admin_required
 def get_reports():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id") or 1
     range_type = request.args.get("range", "today")
 
     if range_type == "today":
@@ -2004,7 +2020,7 @@ def get_reports():
             COALESCE(SUM(CASE WHEN payment_method = 'CASH' AND movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS cash_val,
             COALESCE(SUM(CASE WHEN payment_method = 'MPESA' AND movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS mpesa_val
         FROM transactions t
-        WHERE shop_id = ? AND {date_filter};
+        WHERE (shop_id = ? OR shop_id = 1) AND {date_filter};
     """, (shop_id,))
     totals = cursor.fetchone()
 
@@ -2018,7 +2034,7 @@ def get_reports():
             COALESCE(SUM(t.total_amount), 0) AS total_amount
         FROM transactions t
         JOIN users u ON t.user_id = u.user_id
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT' AND {date_filter}
+        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' AND {date_filter}
         GROUP BY u.user_id
         ORDER BY total_amount DESC;
     """, (shop_id,))
@@ -2039,7 +2055,7 @@ def get_reports():
 @app.route("/api/transactions/drilldown", methods=["GET"])
 @admin_required
 def drilldown_transactions():
-    shop_id = session.get("shop_id")
+    shop_id = session.get("shop_id") or 1
     mode = request.args.get("mode", "TOTAL")
     date_val = request.args.get("date")
 
@@ -2054,7 +2070,6 @@ def drilldown_transactions():
     if date_val and date_val.strip():
         date_filter = "AND DATE(t.timestamp, 'localtime') = ?"
         params.append(date_val.strip())
-    # If date_val is empty, we show all recent transactions for the shop instead of locking to UTC now
 
     conn = get_db()
     cursor = conn.cursor()
@@ -2087,7 +2102,7 @@ def drilldown_transactions():
 @app.route("/api/transactions/drilldown-csv", methods=["GET"])
 @admin_required
 def drilldown_csv():
-    shop_id = session.get("shop_id")
+    shop_id = session.get("shop_id") or 1
     mode = request.args.get("mode", "TOTAL")
     date_val = request.args.get("date")
 
@@ -2135,7 +2150,7 @@ def drilldown_csv():
 @app.route("/api/reports/units-sold", methods=["GET"])
 @admin_required
 def units_sold_report():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -2145,7 +2160,7 @@ def units_sold_report():
             SUM(t.total_amount) AS total_sales
         FROM transactions t
         JOIN items i ON t.item_id = i.item_id
-        WHERE t.shop_id = ? AND t.movement_type = 'OUT'
+        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT'
         GROUP BY i.item_id
         ORDER BY total_units DESC;
     """, (shop_id,))
@@ -2157,7 +2172,7 @@ def units_sold_report():
 @app.route("/api/reports/closing-stock", methods=["GET"])
 @admin_required
 def closing_stock_report():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -2166,7 +2181,7 @@ def closing_stock_report():
             current_stock,
             (current_stock * unit_price) AS valuation
         FROM items
-        WHERE shop_id = ? AND is_active = 1
+        WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1
         ORDER BY name ASC;
     """, (shop_id,))
     rows = [dict(r) for r in cursor.fetchall()]
@@ -2177,7 +2192,7 @@ def closing_stock_report():
 @app.route("/api/reports/closing-stock-csv", methods=["GET"])
 @admin_required
 def closing_stock_csv():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -2187,7 +2202,7 @@ def closing_stock_csv():
             unit_price,
             (current_stock * unit_price) AS valuation
         FROM items
-        WHERE shop_id = ? AND is_active = 1
+        WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1
         ORDER BY name ASC;
     """, (shop_id,))
     rows = cursor.fetchall()
@@ -2205,7 +2220,7 @@ def closing_stock_csv():
 @app.route("/api/reports/export-csv", methods=["GET"])
 @admin_required
 def export_raw_csv():
-    shop_id = session["shop_id"]
+    shop_id = session.get("shop_id") or 1
     start_date = request.args.get("start")
     end_date = request.args.get("end")
     range_type = request.args.get("range")
@@ -2234,7 +2249,7 @@ def export_raw_csv():
         FROM transactions t
         JOIN items i ON t.item_id = i.item_id
         JOIN users u ON t.user_id = u.user_id
-        WHERE t.shop_id = ? AND {date_filter}
+        WHERE (t.shop_id = ? OR t.shop_id = 1) AND {date_filter}
         ORDER BY t.timestamp DESC;
     """, tuple(params))
     rows = cursor.fetchall()
@@ -2271,10 +2286,8 @@ def manifest():
 @app.route("/sw.js")
 def service_worker():
     response = send_from_directory("static", "sw.js", mimetype="application/javascript")
-    # Tell browser service worker is valid across root scope
     response.headers['Service-Worker-Allowed'] = '/'
     return response
-
 
 
 if __name__ == "__main__":
