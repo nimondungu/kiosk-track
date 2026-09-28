@@ -293,7 +293,10 @@ HTML_TEMPLATE = """
                                     class="bg-green-600 hover:bg-green-500 text-white active:scale-95 hover:scale-105 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
                                 <span>📲</span> <span data-i18n="btn_mpesa">M-Pesa</span>
                             </button>
-                            <button onclick="openSplitModal({{ item['item_id'] }}, {{ item['name']|tojson }}, {{ item['unit_price'] }})" 
+                            <button onclick="promptSplitModal(this)" 
+                                    data-id="{{ item['item_id'] }}"
+                                    data-name="{{ item['name'] }}"
+                                    data-price="{{ item['unit_price'] }}"
                                     class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
                                 <span>⚡</span> <span data-i18n="btn_split">Split</span>
                             </button>
@@ -313,9 +316,11 @@ HTML_TEMPLATE = """
                                     class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 hover:scale-105 text-sky-700 dark:text-sky-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 transition flex items-center gap-1">
                                 <span>📦</span> <span data-i18n="btn_in">+ In</span>
                             </button>
-                            <button onclick="deleteItem({{ item['item_id'] }}, {{ item['name']|tojson }})" 
-                                    title="Delete product and wipe its stock" 
-                                    class="bg-rose-100 dark:bg-rose-950/80 hover:bg-rose-200 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center">
+                            <button onclick="promptDeleteItem(this)" 
+                                    data-id="{{ item['item_id'] }}"
+                                    data-name="{{ item['name'] }}"
+                                    title="Delete product and wipe stock" 
+                                    class="bg-rose-100 dark:bg-rose-950/80 hover:bg-rose-200 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800 active:scale-95 hover:scale-105 px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center">
                                 <span>🗑️</span>
                             </button>
                         </div>
@@ -494,7 +499,7 @@ HTML_TEMPLATE = """
 
                         <div class="flex items-center justify-between py-1">
                             <span class="font-semibold text-slate-700 dark:text-slate-300" data-i18n="app_version">App Version</span>
-                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v2.9 Pro</span>
+                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v3.0 Secure</span>
                         </div>
                     </div>
 
@@ -537,6 +542,26 @@ HTML_TEMPLATE = """
 
             </div>
         </section>
+
+        <!-- DELETE PRODUCT CONFIRMATION MODAL -->
+        <div id="deleteItemModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl w-full max-w-sm p-6 shadow-2xl space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+                    <h3 class="text-sm font-bold text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+                        <span>🗑️</span> Delete Product
+                    </h3>
+                    <button onclick="closeDeleteModal()" class="text-slate-400 text-lg font-bold">&times;</button>
+                </div>
+                <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    Are you sure you want to delete <b id="deleteItemName" class="text-slate-900 dark:text-white"></b>? 
+                    This will wipe its shelf stock to 0 and remove it from your active POS counter.
+                </p>
+                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <button type="button" onclick="closeDeleteModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold hover:text-slate-700 dark:hover:text-slate-300 transition">Cancel</button>
+                    <button type="button" onclick="executeDeleteItem()" id="confirmDeleteBtn" class="bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition shadow">Yes, Delete</button>
+                </div>
+            </div>
+        </div>
 
         <!-- DRILLDOWN MODAL -->
         <div id="drilldownModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
@@ -765,11 +790,7 @@ HTML_TEMPLATE = """
 
         const translations = {
             en: { staff: "Staff", item: "Item", entry_date: "📅 Entry Date:", live_mode: "Live Mode (Deducts Stock)", cash: "💵 Cash", mpesa: "📲 M-Pesa", total_sales: "📊 Total Sales", search_placeholder: "Search items...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Split", btn_return: "Return", btn_in: "+ In", reports_title: "Sales & Staff Shifts", reports_subtitle: "Historical performance and staff handovers", today: "Today", yesterday: "Yesterday", week: "7 Days", month: "30 Days", revenue: "Revenue", units_sold: "Units Sold", raw_export: "📥 Flexible Range CSV Export:", csv_year: "Last Year CSV", csv_all: "All-Time CSV", staff_breakdown: "Staff Shift Breakdown", th_staff: "Staff", th_role: "Role", th_sales: "Sales", th_cash: "Cash", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Physical Stock Calibration", stock_subtitle: "Setting counts here overrides your shelf total directly", current_count: "Current Count", btn_set: "Set", store_logo: "Store Logo / Picture", btn_upload: "Upload", btn_remove: "Remove Logo", share_store: "Share Store Link", share_desc: "Copy your store link or share instantly with customers and friends via WhatsApp.", btn_copy: "Copy", btn_whatsapp: "Share via WhatsApp", app_version: "App Version", btn_close: "Close", btn_logout: "Log out", manage_cashiers: "Manage Cashiers", current_team: "Current Team", create_cashier: "Create New Cashier", username: "Username", password_pin: "Password / PIN", btn_create: "Create Cashier", add_product: "Add New Product", product_name: "Product Name", selling_price: "Selling Price (KES)", initial_stock: "Initial Stock", btn_cancel: "Cancel", btn_save: "Save", cash_kes: "Cash (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Complete Sale", nav_counter: "Counter", nav_reports: "Reports", nav_stocktake: "Stock Take", nav_profile: "Profile", install_app_btn: "Install App on Phone", closing_stock_card: "Remaining Closing Stock", closing_stock_sub: "Click to inspect remaining items & valuation", start_date: "Start Date", end_date: "End Date", settings_header: "App Settings & Preferences", theme_pref: "Theme Mode" },
-            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi" },
-            fr: { staff: "Personnel", item: "Article", entry_date: "📅 Date:", live_mode: "Mode en direct", cash: "💵 Espèces", mpesa: "📲 M-Pesa", total_sales: "📊 Ventes Totales", search_placeholder: "Rechercher...", btn_cash: "Espèces", btn_mpesa: "M-Pesa", btn_split: "Diviser", btn_return: "Retour", btn_in: "+ Entrée", reports_title: "Rapports", reports_subtitle: "Performance historique", today: "Aujourd'hui", yesterday: "Hier", week: "7 Jours", month: "30 Jours", revenue: "Revenu", units_sold: "Unités vendues", raw_export: "📥 Exporter Données:", csv_year: "CSV An Dernier", csv_all: "CSV Tout", staff_breakdown: "Détail du Personnel", th_staff: "Personnel", th_role: "Rôle", th_sales: "Ventes", th_cash: "Espèces", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibration Stock", stock_subtitle: "Modifie directement le stock", current_count: "Stock Actuel", btn_set: "Définir", store_logo: "Logo du Magasin", btn_upload: "Télécharger", btn_remove: "Supprimer Logo", share_store: "Partager le lien", share_desc: "Copiez le lien ou partagez avec vos clients via WhatsApp.", btn_copy: "Copier", btn_whatsapp: "Partager via WhatsApp", app_version: "Version", btn_close: "Fermer", btn_logout: "Déconnexion", manage_cashiers: "Gérer Caissiers", current_team: "Équipe", create_cashier: "Créer Caissier", username: "Nom d'utilisateur", password_pin: "Mot de passe", btn_create: "Créer", add_product: "Ajouter Article", product_name: "Nom", selling_price: "Prix (KES)", initial_stock: "Stock Initial", btn_cancel: "Annuler", btn_save: "Enregistrer", cash_kes: "Espèces (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Valider", nav_counter: "Comptoir", nav_reports: "Rapports", nav_stocktake: "Inventaire", nav_profile: "Profil", install_app_btn: "Installer l'application", closing_stock_card: "Stock de Clôture", closing_stock_sub: "Inspecter le stock restant", start_date: "Date Début", end_date: "Date Fin", settings_header: "Paramètres de l'application", theme_pref: "Mode Thème" },
-            es: { staff: "Personal", item: "Artículo", entry_date: "📅 Fecha:", live_mode: "Modo en Vivo", cash: "💵 Efectivo", mpesa: "📲 M-Pesa", total_sales: "📊 Ventas Totales", search_placeholder: "Buscar...", btn_cash: "Efectivo", btn_mpesa: "M-Pesa", btn_split: "Dividir", btn_return: "Devolver", btn_in: "+ Entrar", reports_title: "Reportes", reports_subtitle: "Rendimiento histórico", today: "Hoy", yesterday: "Ayer", week: "7 Días", month: "30 Días", revenue: "Ingresos", units_sold: "Unidades", raw_export: "📥 Exportar Datos:", csv_year: "CSV Año Pasado", csv_all: "CSV Todo", staff_breakdown: "Desglose del Personal", th_staff: "Personal", th_role: "Rol", th_sales: "Ventas", th_cash: "Efectivo", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibración de Stock", stock_subtitle: "Modifica el stock directamente", current_count: "Conteo Actual", btn_set: "Fijar", store_logo: "Logo de Tienda", btn_upload: "Subir", btn_remove: "Eliminar Logo", share_store: "Compartir Enlace", share_desc: "Copia el enlace o compártelo con tus clientes por WhatsApp.", btn_copy: "Copiar", btn_whatsapp: "Compartir por WhatsApp", app_version: "Versión", btn_close: "Cerrar", btn_logout: "Cerrar Sesión", manage_cashiers: "Gestionar Cajeros", current_team: "Equipo", create_cashier: "Crear Cajero", username: "Usuario", password_pin: "Contraseña", btn_create: "Crear", add_product: "Agregar Producto", product_name: "Nombre", selling_price: "Precio (KES)", initial_stock: "Stock Inicial", btn_cancel: "Cancelar", btn_save: "Guardar", cash_kes: "Efectivo (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Completar Venta", nav_counter: "Mostrador", nav_reports: "Reportes", nav_stocktake: "Inventario", nav_profile: "Perfil", install_app_btn: "Instalar Aplicación", closing_stock_card: "Stock Restante", closing_stock_sub: "Ver inventario actual", start_date: "Fecha Inicio", end_date: "Fecha Fin", settings_header: "Configuración de la App", theme_pref: "Modo de Tema" },
-            ar: { staff: "الموظفين", item: "صنف", entry_date: "📅 تاريخ:", live_mode: "الوضع المباشر", cash: "💵 نقدي", mpesa: "📲 إمبيسا", total_sales: "📊 إجمالي المبيعات", search_placeholder: "بحث عن أصناف...", btn_cash: "نقدي", btn_mpesa: "إمبيسا", btn_split: "تقسيم", btn_return: "إرجاع", btn_in: "+ إدخال", reports_title: "التقارير", reports_subtitle: "الأداء التاريخي", today: "اليوم", yesterday: "أمس", week: "7 أيام", month: "30 يوم", revenue: "الإيرادات", units_sold: "الوحدات المباعة", raw_export: "📥 تصدير البيانات:", csv_year: "CSV العام الماضي", csv_all: "CSV الكل", staff_breakdown: "تفصيل ورديات الموظفين", th_staff: "الموظف", th_role: "الدور", th_sales: "المبيعات", th_cash: "نقدي", th_mpesa: "إمبيسا", th_total: "المجموع", stock_calibration: "مراجعة المخزون", stock_subtitle: "تعديل رصيد الرف مباشرة", current_count: "العدد الحالي", btn_set: "تعيين", store_logo: "شعار المتجر", btn_upload: "رفع", btn_remove: "إزالة الشعار", share_store: "مشاركة رابط المتجر", share_desc: "انسخ الرابط أو شاركه مع العملاء والأصدقاء عبر واتساب.", btn_copy: "نسخ", btn_whatsapp: "مشاركة عبر واتساب", app_version: "إصدار التطبيق", btn_close: "إغلاق", btn_logout: "تسجيل الخروج", manage_cashiers: "إدارة الكاشير", current_team: "الفريق الحالي", create_cashier: "إنشاء كاشير", username: "اسم المستخدم", password_pin: "كلمة المرور / الرمز", btn_create: "إنشاء", add_product: "إضافة منتج", product_name: "اسم المنتج", selling_price: "سعر البيع", initial_stock: "المخزون الأولي", btn_cancel: "إلغاء", btn_save: "حفظ", cash_kes: "نقدي", mpesa_kes: "إمبيسا", btn_complete: "إتمام البيع", nav_counter: "العداد", nav_reports: "التقارير", nav_stocktake: "جرد المخزون", nav_profile: "الملف الشخصي", install_app_btn: "تثبيت التطبيق على الهاتف", closing_stock_card: "المخزون المتبقي", closing_stock_sub: "عرض تقييم المخزون", start_date: "تاريخ البدء", end_date: "تاريخ الانتهاء", settings_header: "إعدادات التطبيق", theme_pref: "وضع المظهر" },
-            zh: { staff: "员工", item: "商品", entry_date: "📅 日期：", live_mode: "实时模式", cash: "💵 现金", mpesa: "📲 移动支付", total_sales: "📊 总销售额", search_placeholder: "搜索商品...", btn_cash: "现金", btn_mpesa: "移动支付", btn_split: "拆分", btn_return: "退货", btn_in: "+ 入库", reports_title: "销售与班次", reports_subtitle: "历史业绩", today: "今天", yesterday: "昨天", week: "7天", month: "30天", revenue: "收入", units_sold: "销售数量", raw_export: "📥 导出原始数据:", csv_year: "去年CSV", csv_all: "全部CSV", staff_breakdown: "员工班次明细", th_staff: "员工", th_role: "角色", th_sales: "销售", th_cash: "现金", th_mpesa: "移动支付", th_total: "总计", stock_calibration: "库存校准", stock_subtitle: "直接覆盖货架库存", current_count: "当前盘点", btn_set: "设置", store_logo: "店铺标志", btn_upload: "上传", btn_remove: "移除Logo", share_store: "分享店铺链接", share_desc: "复制您的店铺链接，或通过WhatsApp快速分享给客户和好友。", btn_copy: "复制", btn_whatsapp: "通过WhatsApp分享", app_version: "应用版本", btn_close: "关闭", btn_logout: "退出登录", manage_cashiers: "管理收银员", current_team: "当前团队", create_cashier: "新建收银员", username: "用户名", password_pin: "密码/PIN", btn_create: "创建", add_product: "添加新商品", product_name: "商品名称", selling_price: "售价", initial_stock: "初始库存", btn_cancel: "取消", btn_save: "保存", cash_kes: "现金", mpesa_kes: "移动支付", btn_complete: "完成销售", nav_counter: "收银台", nav_reports: "报表", nav_stocktake: "盘点", nav_profile: "个人资料", install_app_btn: "在手机上安装应用", closing_stock_card: "剩余库存", closing_stock_sub: "查看剩余库存及估值", start_date: "开始日期", end_date: "结束日期", settings_header: "应用设置", theme_pref: "主题模式" }
+            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi" }
         };
 
         function changeLanguage(lang) {
@@ -1025,6 +1046,13 @@ HTML_TEMPLATE = """
         }
 
         let activeSplitId = null, activeSplitTotal = 0, activeSplitQty = 1;
+        function promptSplitModal(btn) {
+            const id = parseInt(btn.dataset.id);
+            const name = btn.dataset.name;
+            const price = parseFloat(btn.dataset.price);
+            openSplitModal(id, name, price);
+        }
+
         function openSplitModal(id, name, price) {
             activeSplitId = id;
             activeSplitQty = parseInt(document.getElementById(`qty-${id}`).value) || 1;
@@ -1148,29 +1176,52 @@ HTML_TEMPLATE = """
             }
         }
 
-        async function deleteItem(itemId, itemName) {
-            if (!confirm(`Are you sure you want to delete "${itemName}"? This wipes its inventory to 0 and removes it from the counter.`)) {
-                return;
-            }
+        // DELETION DIALOG HANDLERS
+        let pendingDeleteId = null;
+        let pendingDeleteName = "";
+
+        function promptDeleteItem(btn) {
+            pendingDeleteId = btn.dataset.id;
+            pendingDeleteName = btn.dataset.name;
+            document.getElementById('deleteItemName').innerText = `"${pendingDeleteName}"`;
+            document.getElementById('deleteItemModal').classList.remove('hidden');
+        }
+
+        function closeDeleteModal() {
+            document.getElementById('deleteItemModal').classList.add('hidden');
+            pendingDeleteId = null;
+            pendingDeleteName = "";
+        }
+
+        async function executeDeleteItem() {
+            if (!pendingDeleteId) return;
+            const btn = document.getElementById('confirmDeleteBtn');
+            btn.disabled = true;
+            btn.innerText = "Deleting...";
+
             try {
                 const res = await fetch('/api/items/delete', {
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ item_id: itemId })
+                    body: JSON.stringify({ item_id: pendingDeleteId })
                 });
                 const d = await res.json();
                 if (res.ok && d.success) {
-                    showToast(`"${itemName}" deleted`);
-                    const card = document.getElementById(`item-card-${itemId}`);
+                    showToast(`"${pendingDeleteName}" deleted`);
+                    const card = document.getElementById(`item-card-${pendingDeleteId}`);
                     if (card) card.remove();
-                    const auditRow = document.getElementById(`audit-row-${itemId}`);
+                    const auditRow = document.getElementById(`audit-row-${pendingDeleteId}`);
                     if (auditRow) auditRow.remove();
+                    closeDeleteModal();
                 } else {
                     showToast(d.error || 'Failed to delete item', false);
                 }
             } catch (err) {
                 showToast('Network error: ' + err.message, false);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Yes, Delete";
             }
         }
 
@@ -1649,14 +1700,16 @@ def login():
 
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT u.user_id, u.shop_id, u.username, u.password_hash, u.role, s.name as shop_name
-            FROM users u
-            JOIN shops s ON u.shop_id = s.shop_id
-            WHERE u.username = ? OR u.phone = ?
-        """, (identifier, identifier))
-        user = cursor.fetchone()
-        conn.close()
+        try:
+            cursor.execute("""
+                SELECT u.user_id, u.shop_id, u.username, u.password_hash, u.role, s.name as shop_name
+                FROM users u
+                JOIN shops s ON u.shop_id = s.shop_id
+                WHERE u.username = ? OR u.phone = ?
+            """, (identifier, identifier))
+            user = cursor.fetchone()
+        finally:
+            conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
             session.permanent = True
@@ -1694,10 +1747,10 @@ def register_shop():
             """, (shop_id, username, phone, recovery_pin, generate_password_hash(password)))
             conn.commit()
         except sqlite3.IntegrityError:
-            conn.close()
             return render_template_string(AUTH_TEMPLATE, mode="register", action_url="/register-shop", button_text="Register Business", error="Username already registered")
+        finally:
+            conn.close()
         
-        conn.close()
         return redirect(url_for("login"))
 
     return render_template_string(AUTH_TEMPLATE, mode="register", action_url="/register-shop", button_text="Register Business", error=None)
@@ -1712,17 +1765,18 @@ def forgot_password():
 
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT user_id, username FROM users WHERE phone = ? AND recovery_pin = ? AND role = 'admin'", (phone, pin))
-        user = cursor.fetchone()
+        try:
+            cursor.execute("SELECT user_id, username FROM users WHERE phone = ? AND recovery_pin = ? AND role = 'admin'", (phone, pin))
+            user = cursor.fetchone()
 
-        if not user:
+            if not user:
+                return render_template_string(AUTH_TEMPLATE, mode="forgot", action_url="/forgot-password", button_text="Reset Password", error="Phone number or Recovery PIN did not match")
+
+            cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", (generate_password_hash(new_password), user["user_id"]))
+            conn.commit()
+            return render_template_string(AUTH_TEMPLATE, mode="login", action_url="/login", button_text="Sign In", message="Password reset successful! You can now log in.")
+        finally:
             conn.close()
-            return render_template_string(AUTH_TEMPLATE, mode="forgot", action_url="/forgot-password", button_text="Reset Password", error="Phone number or Recovery PIN did not match")
-
-        cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", (generate_password_hash(new_password), user["user_id"]))
-        conn.commit()
-        conn.close()
-        return render_template_string(AUTH_TEMPLATE, mode="login", action_url="/login", button_text="Sign In", message="Password reset successful! You can now log in.")
 
     return render_template_string(AUTH_TEMPLATE, mode="forgot", action_url="/forgot-password", button_text="Reset Password", error=None)
 
@@ -1739,19 +1793,20 @@ def index():
     shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM items WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1 ORDER BY name ASC;", (shop_id,))
+        items = cursor.fetchall()
 
-    cursor.execute("SELECT * FROM items WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1 ORDER BY name ASC;", (shop_id,))
-    items = cursor.fetchall()
-
-    cursor.execute("""
-        SELECT 
-            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
-            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
-        FROM transactions
-        WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
-    """, (shop_id,))
-    totals = cursor.fetchone()
-    conn.close()
+        cursor.execute("""
+            SELECT 
+                COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
+                COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
+            FROM transactions
+            WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        """, (shop_id,))
+        totals = cursor.fetchone()
+    finally:
+        conn.close()
 
     today_str = date.today().isoformat()
 
@@ -1907,7 +1962,6 @@ def add_new_item():
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # Check if an item with this name already exists in this shop
         cursor.execute("""
             SELECT item_id, is_active FROM items 
             WHERE name = ? AND (shop_id = ? OR shop_id = 1)
@@ -1916,7 +1970,6 @@ def add_new_item():
 
         if existing:
             if existing["is_active"] == 0:
-                # Reactivate previously deleted item with updated price and stock
                 cursor.execute("""
                     UPDATE items 
                     SET is_active = 1, unit_price = ?, current_stock = ?
@@ -1942,7 +1995,7 @@ def add_new_item():
         return jsonify({"success": True})
     except sqlite3.OperationalError as e:
         conn.rollback()
-        return jsonify({"error": f"Database busy. Try again in a moment: {str(e)}"}), 500
+        return jsonify({"error": f"Database busy. Try again: {str(e)}"}), 500
     except Exception as e:
         conn.rollback()
         return jsonify({"error": f"Failed to save item: {str(e)}"}), 500
@@ -1964,7 +2017,6 @@ def delete_item():
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # Zero out stock and mark inactive so item and its quantity are completely deleted
         cursor.execute("""
             UPDATE items 
             SET current_stock = 0, is_active = 0 
@@ -2384,7 +2436,7 @@ def units_sold_report():
                 SUM(t.total_amount) AS total_sales
             FROM transactions t
             JOIN items i ON t.item_id = i.item_id
-            WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT'
+            WHERE (t.shop_id = ? OR shop_id = 1) AND t.movement_type = 'OUT'
             GROUP BY i.item_id
             ORDER BY total_units DESC;
         """, (shop_id,))
@@ -2479,7 +2531,7 @@ def export_raw_csv():
             FROM transactions t
             JOIN items i ON t.item_id = i.item_id
             JOIN users u ON t.user_id = u.user_id
-            WHERE (t.shop_id = ? OR t.shop_id = 1) AND {date_filter}
+            WHERE (t.shop_id = ? OR shop_id = 1) AND {date_filter}
             ORDER BY t.timestamp DESC;
         """, tuple(params))
         rows = cursor.fetchall()
