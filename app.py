@@ -27,11 +27,16 @@ BASE_DIR = os.environ.get(
 DB_FILE = "/home/kiosktrack/kiosk-track/shop.db" if os.path.exists("/home/kiosktrack/kiosk-track") else os.path.join(BASE_DIR, "shop.db")
 
 
-def init_db():
-    os.makedirs(os.path.dirname(os.path.abspath(DB_FILE)), exist_ok=True)
-    conn = sqlite3.connect(DB_FILE, timeout=25)
+def get_db():
+    conn = sqlite3.connect(DB_FILE, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
+
+
+def init_db():
+    os.makedirs(os.path.dirname(os.path.abspath(DB_FILE)), exist_ok=True)
+    conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -108,13 +113,6 @@ def init_db():
 
     conn.commit()
     conn.close()
-
-
-def get_db():
-    conn = sqlite3.connect(DB_FILE, timeout=25)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
 
 
 with app.app_context():
@@ -226,7 +224,7 @@ HTML_TEMPLATE = """
                         <span>🟢</span> <span data-i18n="live_mode">Live Mode (Deducts Stock)</span>
                     </div>
                     {% if session.get('role') == 'admin' %}
-                    <button onclick="settleDaySales()" title="Clear/Settle Sales for this Date to KES 0" class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 font-bold px-2 py-1 rounded-xl text-[10px] transition flex items-center gap-1">
+                    <button onclick="settleDaySales()" title="Reset and settle daily sales to KES 0" class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 font-bold px-2 py-1 rounded-xl text-[10px] transition flex items-center gap-1">
                         <span>🧹</span> Settle/Reset Day
                     </button>
                     {% endif %}
@@ -767,7 +765,11 @@ HTML_TEMPLATE = """
 
         const translations = {
             en: { staff: "Staff", item: "Item", entry_date: "📅 Entry Date:", live_mode: "Live Mode (Deducts Stock)", cash: "💵 Cash", mpesa: "📲 M-Pesa", total_sales: "📊 Total Sales", search_placeholder: "Search items...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Split", btn_return: "Return", btn_in: "+ In", reports_title: "Sales & Staff Shifts", reports_subtitle: "Historical performance and staff handovers", today: "Today", yesterday: "Yesterday", week: "7 Days", month: "30 Days", revenue: "Revenue", units_sold: "Units Sold", raw_export: "📥 Flexible Range CSV Export:", csv_year: "Last Year CSV", csv_all: "All-Time CSV", staff_breakdown: "Staff Shift Breakdown", th_staff: "Staff", th_role: "Role", th_sales: "Sales", th_cash: "Cash", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Physical Stock Calibration", stock_subtitle: "Setting counts here overrides your shelf total directly", current_count: "Current Count", btn_set: "Set", store_logo: "Store Logo / Picture", btn_upload: "Upload", btn_remove: "Remove Logo", share_store: "Share Store Link", share_desc: "Copy your store link or share instantly with customers and friends via WhatsApp.", btn_copy: "Copy", btn_whatsapp: "Share via WhatsApp", app_version: "App Version", btn_close: "Close", btn_logout: "Log out", manage_cashiers: "Manage Cashiers", current_team: "Current Team", create_cashier: "Create New Cashier", username: "Username", password_pin: "Password / PIN", btn_create: "Create Cashier", add_product: "Add New Product", product_name: "Product Name", selling_price: "Selling Price (KES)", initial_stock: "Initial Stock", btn_cancel: "Cancel", btn_save: "Save", cash_kes: "Cash (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Complete Sale", nav_counter: "Counter", nav_reports: "Reports", nav_stocktake: "Stock Take", nav_profile: "Profile", install_app_btn: "Install App on Phone", closing_stock_card: "Remaining Closing Stock", closing_stock_sub: "Click to inspect remaining items & valuation", start_date: "Start Date", end_date: "End Date", settings_header: "App Settings & Preferences", theme_pref: "Theme Mode" },
-            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi" }
+            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi" },
+            fr: { staff: "Personnel", item: "Article", entry_date: "📅 Date:", live_mode: "Mode en direct", cash: "💵 Espèces", mpesa: "📲 M-Pesa", total_sales: "📊 Ventes Totales", search_placeholder: "Rechercher...", btn_cash: "Espèces", btn_mpesa: "M-Pesa", btn_split: "Diviser", btn_return: "Retour", btn_in: "+ Entrée", reports_title: "Rapports", reports_subtitle: "Performance historique", today: "Aujourd'hui", yesterday: "Hier", week: "7 Jours", month: "30 Jours", revenue: "Revenu", units_sold: "Unités vendues", raw_export: "📥 Exporter Données:", csv_year: "CSV An Dernier", csv_all: "CSV Tout", staff_breakdown: "Détail du Personnel", th_staff: "Personnel", th_role: "Rôle", th_sales: "Ventes", th_cash: "Espèces", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibration Stock", stock_subtitle: "Modifie directement le stock", current_count: "Stock Actuel", btn_set: "Définir", store_logo: "Logo du Magasin", btn_upload: "Télécharger", btn_remove: "Supprimer Logo", share_store: "Partager le lien", share_desc: "Copiez le lien ou partagez avec vos clients via WhatsApp.", btn_copy: "Copier", btn_whatsapp: "Partager via WhatsApp", app_version: "Version", btn_close: "Fermer", btn_logout: "Déconnexion", manage_cashiers: "Gérer Caissiers", current_team: "Équipe", create_cashier: "Créer Caissier", username: "Nom d'utilisateur", password_pin: "Mot de passe", btn_create: "Créer", add_product: "Ajouter Article", product_name: "Nom", selling_price: "Prix (KES)", initial_stock: "Stock Initial", btn_cancel: "Annuler", btn_save: "Enregistrer", cash_kes: "Espèces (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Valider", nav_counter: "Comptoir", nav_reports: "Rapports", nav_stocktake: "Inventaire", nav_profile: "Profil", install_app_btn: "Installer l'application", closing_stock_card: "Stock de Clôture", closing_stock_sub: "Inspecter le stock restant", start_date: "Date Début", end_date: "Date Fin", settings_header: "Paramètres de l'application", theme_pref: "Mode Thème" },
+            es: { staff: "Personal", item: "Artículo", entry_date: "📅 Fecha:", live_mode: "Modo en Vivo", cash: "💵 Efectivo", mpesa: "📲 M-Pesa", total_sales: "📊 Ventas Totales", search_placeholder: "Buscar...", btn_cash: "Efectivo", btn_mpesa: "M-Pesa", btn_split: "Dividir", btn_return: "Devolver", btn_in: "+ Entrar", reports_title: "Reportes", reports_subtitle: "Rendimiento histórico", today: "Hoy", yesterday: "Ayer", week: "7 Días", month: "30 Días", revenue: "Ingresos", units_sold: "Unidades", raw_export: "📥 Exportar Datos:", csv_year: "CSV Año Pasado", csv_all: "CSV Todo", staff_breakdown: "Desglose del Personal", th_staff: "Personal", th_role: "Rol", th_sales: "Ventas", th_cash: "Efectivo", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibración de Stock", stock_subtitle: "Modifica el stock directamente", current_count: "Conteo Actual", btn_set: "Fijar", store_logo: "Logo de Tienda", btn_upload: "Subir", btn_remove: "Eliminar Logo", share_store: "Compartir Enlace", share_desc: "Copia el enlace o compártelo con tus clientes por WhatsApp.", btn_copy: "Copiar", btn_whatsapp: "Compartir por WhatsApp", app_version: "Versión", btn_close: "Cerrar", btn_logout: "Cerrar Sesión", manage_cashiers: "Gestionar Cajeros", current_team: "Equipo", create_cashier: "Crear Cajero", username: "Usuario", password_pin: "Contraseña", btn_create: "Crear", add_product: "Agregar Producto", product_name: "Nombre", selling_price: "Precio (KES)", initial_stock: "Stock Inicial", btn_cancel: "Cancelar", btn_save: "Guardar", cash_kes: "Efectivo (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Completar Venta", nav_counter: "Mostrador", nav_reports: "Reportes", nav_stocktake: "Inventario", nav_profile: "Perfil", install_app_btn: "Instalar Aplicación", closing_stock_card: "Stock Restante", closing_stock_sub: "Ver inventario actual", start_date: "Fecha Inicio", end_date: "Fecha Fin", settings_header: "Configuración de la App", theme_pref: "Modo de Tema" },
+            ar: { staff: "الموظفين", item: "صنف", entry_date: "📅 تاريخ:", live_mode: "الوضع المباشر", cash: "💵 نقدي", mpesa: "📲 إمبيسا", total_sales: "📊 إجمالي المبيعات", search_placeholder: "بحث عن أصناف...", btn_cash: "نقدي", btn_mpesa: "إمبيسا", btn_split: "تقسيم", btn_return: "إرجاع", btn_in: "+ إدخال", reports_title: "التقارير", reports_subtitle: "الأداء التاريخي", today: "اليوم", yesterday: "أمس", week: "7 أيام", month: "30 يوم", revenue: "الإيرادات", units_sold: "الوحدات المباعة", raw_export: "📥 تصدير البيانات:", csv_year: "CSV العام الماضي", csv_all: "CSV الكل", staff_breakdown: "تفصيل ورديات الموظفين", th_staff: "الموظف", th_role: "الدور", th_sales: "المبيعات", th_cash: "نقدي", th_mpesa: "إمبيسا", th_total: "المجموع", stock_calibration: "مراجعة المخزون", stock_subtitle: "تعديل رصيد الرف مباشرة", current_count: "العدد الحالي", btn_set: "تعيين", store_logo: "شعار المتجر", btn_upload: "رفع", btn_remove: "إزالة الشعار", share_store: "مشاركة رابط المتجر", share_desc: "انسخ الرابط أو شاركه مع العملاء والأصدقاء عبر واتساب.", btn_copy: "نسخ", btn_whatsapp: "مشاركة عبر واتساب", app_version: "إصدار التطبيق", btn_close: "إغلاق", btn_logout: "تسجيل الخروج", manage_cashiers: "إدارة الكاشير", current_team: "الفريق الحالي", create_cashier: "إنشاء كاشير", username: "اسم المستخدم", password_pin: "كلمة المرور / الرمز", btn_create: "إنشاء", add_product: "إضافة منتج", product_name: "اسم المنتج", selling_price: "سعر البيع", initial_stock: "المخزون الأولي", btn_cancel: "إلغاء", btn_save: "حفظ", cash_kes: "نقدي", mpesa_kes: "إمبيسا", btn_complete: "إتمام البيع", nav_counter: "العداد", nav_reports: "التقارير", nav_stocktake: "جرد المخزون", nav_profile: "الملف الشخصي", install_app_btn: "تثبيت التطبيق على الهاتف", closing_stock_card: "المخزون المتبقي", closing_stock_sub: "عرض تقييم المخزون", start_date: "تاريخ البدء", end_date: "تاريخ الانتهاء", settings_header: "إعدادات التطبيق", theme_pref: "وضع المظهر" },
+            zh: { staff: "员工", item: "商品", entry_date: "📅 日期：", live_mode: "实时模式", cash: "💵 现金", mpesa: "📲 移动支付", total_sales: "📊 总销售额", search_placeholder: "搜索商品...", btn_cash: "现金", btn_mpesa: "移动支付", btn_split: "拆分", btn_return: "退货", btn_in: "+ 入库", reports_title: "销售与班次", reports_subtitle: "历史业绩", today: "今天", yesterday: "昨天", week: "7天", month: "30天", revenue: "收入", units_sold: "销售数量", raw_export: "📥 导出原始数据:", csv_year: "去年CSV", csv_all: "全部CSV", staff_breakdown: "员工班次明细", th_staff: "员工", th_role: "角色", th_sales: "销售", th_cash: "现金", th_mpesa: "移动支付", th_total: "总计", stock_calibration: "库存校准", stock_subtitle: "直接覆盖货架库存", current_count: "当前盘点", btn_set: "设置", store_logo: "店铺标志", btn_upload: "上传", btn_remove: "移除Logo", share_store: "分享店铺链接", share_desc: "复制您的店铺链接，或通过WhatsApp快速分享给客户和好友。", btn_copy: "复制", btn_whatsapp: "通过WhatsApp分享", app_version: "应用版本", btn_close: "关闭", btn_logout: "退出登录", manage_cashiers: "管理收银员", current_team: "当前团队", create_cashier: "新建收银员", username: "用户名", password_pin: "密码/PIN", btn_create: "创建", add_product: "添加新商品", product_name: "商品名称", selling_price: "售价", initial_stock: "初始库存", btn_cancel: "取消", btn_save: "保存", cash_kes: "现金", mpesa_kes: "移动支付", btn_complete: "完成销售", nav_counter: "收银台", nav_reports: "报表", nav_stocktake: "盘点", nav_profile: "个人资料", install_app_btn: "在手机上安装应用", closing_stock_card: "剩余库存", closing_stock_sub: "查看剩余库存及估值", start_date: "开始日期", end_date: "结束日期", settings_header: "应用设置", theme_pref: "主题模式" }
         };
 
         function changeLanguage(lang) {
@@ -1768,18 +1770,19 @@ def store_logo():
     shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
-    if request.method == "POST":
-        data = request.get_json() or {}
-        logo_data = data.get("logo", "")
-        cursor.execute("UPDATE shops SET store_logo = ? WHERE shop_id = ? OR shop_id = 1", (logo_data, shop_id))
-        conn.commit()
+    try:
+        if request.method == "POST":
+            data = request.get_json() or {}
+            logo_data = data.get("logo", "")
+            cursor.execute("UPDATE shops SET store_logo = ? WHERE shop_id = ? OR shop_id = 1", (logo_data, shop_id))
+            conn.commit()
+            return jsonify({"success": True})
+        else:
+            cursor.execute("SELECT store_logo FROM shops WHERE shop_id = ? OR shop_id = 1 ORDER BY (shop_id = ?) DESC LIMIT 1", (shop_id, shop_id))
+            row = cursor.fetchone()
+            return jsonify({"logo": row["store_logo"] if row and row["store_logo"] else ""})
+    finally:
         conn.close()
-        return jsonify({"success": True})
-    else:
-        cursor.execute("SELECT store_logo FROM shops WHERE shop_id = ? OR shop_id = 1 ORDER BY (shop_id = ?) DESC LIMIT 1", (shop_id, shop_id))
-        row = cursor.fetchone()
-        conn.close()
-        return jsonify({"logo": row["store_logo"] if row and row["store_logo"] else ""})
 
 
 @app.route("/api/staff/list", methods=["GET"])
@@ -1788,15 +1791,17 @@ def list_staff():
     shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT user_id, username, role 
-        FROM users 
-        WHERE shop_id = ? OR shop_id = 1 
-        ORDER BY role ASC, username ASC;
-    """, (shop_id,))
-    users = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return jsonify({"users": users})
+    try:
+        cursor.execute("""
+            SELECT user_id, username, role 
+            FROM users 
+            WHERE shop_id = ? OR shop_id = 1 
+            ORDER BY role ASC, username ASC;
+        """, (shop_id,))
+        users = [dict(r) for r in cursor.fetchall()]
+        return jsonify({"users": users})
+    finally:
+        conn.close()
 
 
 @app.route("/api/staff/create", methods=["POST"])
@@ -1819,12 +1824,11 @@ def create_staff():
             VALUES (?, ?, ?, ?)
         """, (shop_id, username, generate_password_hash(password), role))
         conn.commit()
+        return jsonify({"success": True})
     except sqlite3.IntegrityError:
-        conn.close()
         return jsonify({"error": "Username already taken"}), 400
-
-    conn.close()
-    return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 @app.route("/api/staff/reset-password", methods=["POST"])
@@ -1839,11 +1843,13 @@ def admin_reset_staff_password():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND role != 'admin'", 
-                   (generate_password_hash(new_password), user_id))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True})
+    try:
+        cursor.execute("UPDATE users SET password_hash = ? WHERE user_id = ? AND role != 'admin'", 
+                       (generate_password_hash(new_password), user_id))
+        conn.commit()
+        return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 @app.route("/api/staff/delete", methods=["POST"])
@@ -1857,21 +1863,21 @@ def delete_staff():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
-    target = cursor.fetchone()
-    
-    if not target:
-        conn.close()
-        return jsonify({"error": "User not found"}), 404
+    try:
+        cursor.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
+        target = cursor.fetchone()
         
-    if target["role"] == "admin":
-        conn.close()
-        return jsonify({"error": "Cannot delete admin account"}), 403
+        if not target:
+            return jsonify({"error": "User not found"}), 404
+            
+        if target["role"] == "admin":
+            return jsonify({"error": "Cannot delete admin account"}), 403
 
-    cursor.execute("DELETE FROM users WHERE user_id = ? AND role != 'admin'", (user_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True})
+        cursor.execute("DELETE FROM users WHERE user_id = ? AND role != 'admin'", (user_id,))
+        conn.commit()
+        return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 @app.route("/api/items/add", methods=["POST"])
@@ -1901,11 +1907,30 @@ def add_new_item():
     conn = get_db()
     cursor = conn.cursor()
     try:
+        # Check if an item with this name already exists in this shop
         cursor.execute("""
-            INSERT INTO items (shop_id, name, unit_price, current_stock, is_active)
-            VALUES (?, ?, ?, ?, 1)
-        """, (shop_id, name, price, stock))
-        item_id = cursor.lastrowid
+            SELECT item_id, is_active FROM items 
+            WHERE name = ? AND (shop_id = ? OR shop_id = 1)
+        """, (name, shop_id))
+        existing = cursor.fetchone()
+
+        if existing:
+            if existing["is_active"] == 0:
+                # Reactivate previously deleted item with updated price and stock
+                cursor.execute("""
+                    UPDATE items 
+                    SET is_active = 1, unit_price = ?, current_stock = ?
+                    WHERE item_id = ?
+                """, (price, stock, existing["item_id"]))
+                item_id = existing["item_id"]
+            else:
+                return jsonify({"error": f"Item '{name}' already exists in your stock!"}), 400
+        else:
+            cursor.execute("""
+                INSERT INTO items (shop_id, name, unit_price, current_stock, is_active)
+                VALUES (?, ?, ?, ?, 1)
+            """, (shop_id, name, price, stock))
+            item_id = cursor.lastrowid
 
         if stock > 0:
             cursor.execute("""
@@ -1914,17 +1939,15 @@ def add_new_item():
             """, (shop_id, user_id, item_id, stock, price, stock * price))
 
         conn.commit()
+        return jsonify({"success": True})
     except sqlite3.OperationalError as e:
         conn.rollback()
-        conn.close()
-        return jsonify({"error": f"Database busy or locked. Try again in a moment ({str(e)})"}), 500
+        return jsonify({"error": f"Database busy. Try again in a moment: {str(e)}"}), 500
     except Exception as e:
         conn.rollback()
-        conn.close()
         return jsonify({"error": f"Failed to save item: {str(e)}"}), 500
-
-    conn.close()
-    return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 @app.route("/api/items/delete", methods=["POST"])
@@ -1954,13 +1977,12 @@ def delete_item():
         """, (shop_id, user_id, item_id))
 
         conn.commit()
+        return jsonify({"success": True})
     except Exception as e:
         conn.rollback()
-        conn.close()
         return jsonify({"error": f"Could not delete item: {str(e)}"}), 500
-
-    conn.close()
-    return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 @app.route("/api/sales/settle-day", methods=["POST"])
@@ -1973,7 +1995,6 @@ def settle_day_sales():
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # Settle sales for the selected date to zero
         cursor.execute("""
             DELETE FROM transactions 
             WHERE (shop_id = ? OR shop_id = 1) 
@@ -1981,13 +2002,12 @@ def settle_day_sales():
               AND DATE(timestamp, 'localtime') = ?
         """, (shop_id, target_date))
         conn.commit()
+        return jsonify({"success": True})
     except Exception as e:
         conn.rollback()
-        conn.close()
         return jsonify({"error": f"Failed to settle sales: {str(e)}"}), 500
-
-    conn.close()
-    return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 @app.route("/api/sale", methods=["POST"])
@@ -2003,43 +2023,44 @@ def api_sale():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
-    item = cursor.fetchone()
+    try:
+        cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
+        item = cursor.fetchone()
 
-    if not item:
+        if not item:
+            return jsonify({"error": "Item not found"}), 404
+
+        total = qty * item["unit_price"]
+        
+        cursor.execute("""
+            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
+            VALUES (?, ?, ?, 'OUT', ?, ?, ?, ?, datetime(?, '12:00:00'))
+        """, (shop_id, user_id, item_id, payment, qty, item["unit_price"], total, sale_date))
+
+        if sale_date == date.today().isoformat():
+            cursor.execute("UPDATE items SET current_stock = current_stock - ? WHERE item_id = ?", (qty, item_id))
+
+        cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
+        new_stock = cursor.fetchone()["current_stock"]
+
+        cursor.execute("""
+            SELECT 
+                COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
+                COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
+            FROM transactions
+            WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        """, (shop_id,))
+        totals = cursor.fetchone()
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "new_stock": new_stock,
+            "today_cash": totals["cash_total"],
+            "today_mpesa": totals["mpesa_total"]
+        })
+    finally:
         conn.close()
-        return jsonify({"error": "Item not found"}), 404
-
-    total = qty * item["unit_price"]
-    
-    cursor.execute("""
-        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
-        VALUES (?, ?, ?, 'OUT', ?, ?, ?, ?, datetime(?, '12:00:00'))
-    """, (shop_id, user_id, item_id, payment, qty, item["unit_price"], total, sale_date))
-
-    if sale_date == date.today().isoformat():
-        cursor.execute("UPDATE items SET current_stock = current_stock - ? WHERE item_id = ?", (qty, item_id))
-
-    cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
-    new_stock = cursor.fetchone()["current_stock"]
-
-    cursor.execute("""
-        SELECT 
-            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
-            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
-        FROM transactions
-        WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
-    """, (shop_id,))
-    totals = cursor.fetchone()
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "success": True,
-        "new_stock": new_stock,
-        "today_cash": totals["cash_total"],
-        "today_mpesa": totals["mpesa_total"]
-    })
 
 
 @app.route("/api/sale/split", methods=["POST"])
@@ -2056,46 +2077,47 @@ def api_sale_split():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
-    item = cursor.fetchone()
+    try:
+        cursor.execute("SELECT name, unit_price, current_stock FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
+        item = cursor.fetchone()
 
-    if not item:
+        if not item:
+            return jsonify({"error": "Item not found"}), 404
+
+        cursor.execute("""
+            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
+            VALUES (?, ?, ?, 'OUT', 'CASH', ?, ?, ?, datetime(?, '12:00:00'))
+        """, (shop_id, user_id, item_id, qty, item["unit_price"], cash_amount, sale_date))
+
+        cursor.execute("""
+            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
+            VALUES (?, ?, ?, 'OUT', 'MPESA', 0, ?, ?, datetime(?, '12:00:00'))
+        """, (shop_id, user_id, item_id, item["unit_price"], mpesa_amount, sale_date))
+
+        if sale_date == date.today().isoformat():
+            cursor.execute("UPDATE items SET current_stock = current_stock - ? WHERE item_id = ?", (qty, item_id))
+
+        cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
+        new_stock = cursor.fetchone()["current_stock"]
+
+        cursor.execute("""
+            SELECT 
+                COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
+                COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
+            FROM transactions
+            WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        """, (shop_id,))
+        totals = cursor.fetchone()
+        conn.commit()
+
+        return jsonify({
+            "success": True,
+            "new_stock": new_stock,
+            "today_cash": totals["cash_total"],
+            "today_mpesa": totals["mpesa_total"]
+        })
+    finally:
         conn.close()
-        return jsonify({"error": "Item not found"}), 404
-
-    cursor.execute("""
-        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
-        VALUES (?, ?, ?, 'OUT', 'CASH', ?, ?, ?, datetime(?, '12:00:00'))
-    """, (shop_id, user_id, item_id, qty, item["unit_price"], cash_amount, sale_date))
-
-    cursor.execute("""
-        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount, timestamp)
-        VALUES (?, ?, ?, 'OUT', 'MPESA', 0, ?, ?, datetime(?, '12:00:00'))
-    """, (shop_id, user_id, item_id, item["unit_price"], mpesa_amount, sale_date))
-
-    if sale_date == date.today().isoformat():
-        cursor.execute("UPDATE items SET current_stock = current_stock - ? WHERE item_id = ?", (qty, item_id))
-
-    cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
-    new_stock = cursor.fetchone()["current_stock"]
-
-    cursor.execute("""
-        SELECT 
-            COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
-            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
-        FROM transactions
-        WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
-    """, (shop_id,))
-    totals = cursor.fetchone()
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "success": True,
-        "new_stock": new_stock,
-        "today_cash": totals["cash_total"],
-        "today_mpesa": totals["mpesa_total"]
-    })
 
 
 @app.route("/api/sale/reverse", methods=["POST"])
@@ -2109,23 +2131,25 @@ def api_sale_reverse():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
-    item = cursor.fetchone()
+    try:
+        cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
+        item = cursor.fetchone()
 
-    total = qty * item["unit_price"]
-    cursor.execute("UPDATE items SET current_stock = current_stock + ? WHERE item_id = ?", (qty, item_id))
+        total = qty * item["unit_price"]
+        cursor.execute("UPDATE items SET current_stock = current_stock + ? WHERE item_id = ?", (qty, item_id))
 
-    cursor.execute("""
-        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-        VALUES (?, ?, ?, 'IN', 'CASH', ?, ?, ?)
-    """, (shop_id, user_id, item_id, qty, item["unit_price"], -total))
+        cursor.execute("""
+            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+            VALUES (?, ?, ?, 'IN', 'CASH', ?, ?, ?)
+        """, (shop_id, user_id, item_id, qty, item["unit_price"], -total))
 
-    cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
-    new_stock = cursor.fetchone()["current_stock"]
-    conn.commit()
-    conn.close()
+        cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
+        new_stock = cursor.fetchone()["current_stock"]
+        conn.commit()
 
-    return jsonify({"success": True, "new_stock": new_stock})
+        return jsonify({"success": True, "new_stock": new_stock})
+    finally:
+        conn.close()
 
 
 @app.route("/api/stocktake/update-count", methods=["POST"])
@@ -2139,16 +2163,18 @@ def update_stock_count():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("UPDATE items SET current_stock = ? WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (counted_qty, item_id, shop_id))
-    
-    cursor.execute("""
-        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-        VALUES (?, ?, ?, 'ADJUSTMENT', 'N/A', ?, 0, 0)
-    """, (shop_id, user_id, item_id, counted_qty))
+    try:
+        cursor.execute("UPDATE items SET current_stock = ? WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (counted_qty, item_id, shop_id))
+        
+        cursor.execute("""
+            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+            VALUES (?, ?, ?, 'ADJUSTMENT', 'N/A', ?, 0, 0)
+        """, (shop_id, user_id, item_id, counted_qty))
 
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "new_stock": counted_qty})
+        conn.commit()
+        return jsonify({"success": True, "new_stock": counted_qty})
+    finally:
+        conn.close()
 
 
 @app.route("/api/restock", methods=["POST"])
@@ -2165,22 +2191,24 @@ def api_restock():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
-    item = cursor.fetchone()
+    try:
+        cursor.execute("SELECT unit_price FROM items WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)", (item_id, shop_id))
+        item = cursor.fetchone()
 
-    cursor.execute("UPDATE items SET current_stock = current_stock + ? WHERE item_id = ?", (qty, item_id))
+        cursor.execute("UPDATE items SET current_stock = current_stock + ? WHERE item_id = ?", (qty, item_id))
 
-    cursor.execute("""
-        INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
-        VALUES (?, ?, ?, 'IN', 'N/A', ?, ?, ?)
-    """, (shop_id, user_id, item_id, qty, item["unit_price"], qty * item["unit_price"]))
+        cursor.execute("""
+            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+            VALUES (?, ?, ?, 'IN', 'N/A', ?, ?, ?)
+        """, (shop_id, user_id, item_id, qty, item["unit_price"], qty * item["unit_price"]))
 
-    cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
-    new_stock = cursor.fetchone()["current_stock"]
-    conn.commit()
-    conn.close()
+        cursor.execute("SELECT current_stock FROM items WHERE item_id = ?", (item_id,))
+        new_stock = cursor.fetchone()["current_stock"]
+        conn.commit()
 
-    return jsonify({"success": True, "new_stock": new_stock})
+        return jsonify({"success": True, "new_stock": new_stock})
+    finally:
+        conn.close()
 
 
 @app.route("/api/reports", methods=["GET"])
@@ -2202,44 +2230,45 @@ def get_reports():
 
     conn = get_db()
     cursor = conn.cursor()
+    try:
+        cursor.execute(f"""
+            SELECT 
+                COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS total_units_sold,
+                COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS total_sales_val,
+                COALESCE(SUM(CASE WHEN payment_method = 'CASH' AND movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS cash_val,
+                COALESCE(SUM(CASE WHEN payment_method = 'MPESA' AND movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS mpesa_val
+            FROM transactions t
+            WHERE (shop_id = ? OR shop_id = 1) AND {date_filter};
+        """, (shop_id,))
+        totals = cursor.fetchone()
 
-    cursor.execute(f"""
-        SELECT 
-            COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS total_units_sold,
-            COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS total_sales_val,
-            COALESCE(SUM(CASE WHEN payment_method = 'CASH' AND movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS cash_val,
-            COALESCE(SUM(CASE WHEN payment_method = 'MPESA' AND movement_type = 'OUT' THEN total_amount ELSE 0 END), 0) AS mpesa_val
-        FROM transactions t
-        WHERE (shop_id = ? OR shop_id = 1) AND {date_filter};
-    """, (shop_id,))
-    totals = cursor.fetchone()
+        cursor.execute(f"""
+            SELECT 
+                u.username,
+                u.role,
+                COUNT(t.transaction_id) AS tx_count,
+                COALESCE(SUM(CASE WHEN t.payment_method = 'CASH' THEN t.total_amount ELSE 0 END), 0) AS cash_amount,
+                COALESCE(SUM(CASE WHEN t.payment_method = 'MPESA' THEN t.total_amount ELSE 0 END), 0) AS mpesa_amount,
+                COALESCE(SUM(t.total_amount), 0) AS total_amount
+            FROM transactions t
+            JOIN users u ON t.user_id = u.user_id
+            WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' AND {date_filter}
+            GROUP BY u.user_id
+            ORDER BY total_amount DESC;
+        """, (shop_id,))
+        staff_summary = [dict(row) for row in cursor.fetchall()]
 
-    cursor.execute(f"""
-        SELECT 
-            u.username,
-            u.role,
-            COUNT(t.transaction_id) AS tx_count,
-            COALESCE(SUM(CASE WHEN t.payment_method = 'CASH' THEN t.total_amount ELSE 0 END), 0) AS cash_amount,
-            COALESCE(SUM(CASE WHEN t.payment_method = 'MPESA' THEN t.total_amount ELSE 0 END), 0) AS mpesa_amount,
-            COALESCE(SUM(t.total_amount), 0) AS total_amount
-        FROM transactions t
-        JOIN users u ON t.user_id = u.user_id
-        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' AND {date_filter}
-        GROUP BY u.user_id
-        ORDER BY total_amount DESC;
-    """, (shop_id,))
-    staff_summary = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-
-    return jsonify({
-        "summary": {
-            "total_revenue": totals["total_sales_val"],
-            "total_units": totals["total_units_sold"],
-            "cash": totals["cash_val"],
-            "mpesa": totals["mpesa_val"]
-        },
-        "staff": staff_summary
-    })
+        return jsonify({
+            "summary": {
+                "total_revenue": totals["total_sales_val"],
+                "total_units": totals["total_units_sold"],
+                "cash": totals["cash_val"],
+                "mpesa": totals["mpesa_val"]
+            },
+            "staff": staff_summary
+        })
+    finally:
+        conn.close()
 
 
 @app.route("/api/transactions/drilldown", methods=["GET"])
@@ -2263,30 +2292,32 @@ def drilldown_transactions():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT 
-            t.transaction_id,
-            t.timestamp,
-            i.name AS product_name,
-            t.quantity,
-            t.payment_method,
-            t.total_amount
-        FROM transactions t
-        JOIN items i ON t.item_id = i.item_id
-        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter}
-        ORDER BY t.timestamp DESC;
-    """, tuple(params))
-    rows = [dict(r) for r in cursor.fetchall()]
+    try:
+        cursor.execute(f"""
+            SELECT 
+                t.transaction_id,
+                t.timestamp,
+                i.name AS product_name,
+                t.quantity,
+                t.payment_method,
+                t.total_amount
+            FROM transactions t
+            JOIN items i ON t.item_id = i.item_id
+            WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter}
+            ORDER BY t.timestamp DESC;
+        """, tuple(params))
+        rows = [dict(r) for r in cursor.fetchall()]
 
-    cursor.execute(f"""
-        SELECT COALESCE(SUM(t.total_amount), 0) as total
-        FROM transactions t
-        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter};
-    """, tuple(params))
-    total_val = cursor.fetchone()["total"]
-    conn.close()
+        cursor.execute(f"""
+            SELECT COALESCE(SUM(t.total_amount), 0) as total
+            FROM transactions t
+            WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter};
+        """, tuple(params))
+        total_val = cursor.fetchone()["total"]
 
-    return jsonify({"transactions": rows, "total_amount": total_val})
+        return jsonify({"transactions": rows, "total_amount": total_val})
+    finally:
+        conn.close()
 
 
 @app.route("/api/transactions/drilldown-csv", methods=["GET"])
@@ -2310,31 +2341,33 @@ def drilldown_csv():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT 
-            t.transaction_id,
-            t.timestamp,
-            i.name AS product_name,
-            t.quantity,
-            t.payment_method,
-            t.total_amount,
-            u.username AS handled_by
-        FROM transactions t
-        JOIN items i ON t.item_id = i.item_id
-        JOIN users u ON t.user_id = u.user_id
-        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter}
-        ORDER BY t.timestamp DESC;
-    """, tuple(params))
-    rows = cursor.fetchall()
-    conn.close()
+    try:
+        cursor.execute(f"""
+            SELECT 
+                t.transaction_id,
+                t.timestamp,
+                i.name AS product_name,
+                t.quantity,
+                t.payment_method,
+                t.total_amount,
+                u.username AS handled_by
+            FROM transactions t
+            JOIN items i ON t.item_id = i.item_id
+            JOIN users u ON t.user_id = u.user_id
+            WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT' {pay_filter} {date_filter}
+            ORDER BY t.timestamp DESC;
+        """, tuple(params))
+        rows = cursor.fetchall()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Transaction ID", "Timestamp", "Product Name", "Quantity", "Payment Method", "Total Amount (KES)", "Staff Member"])
-    for row in rows:
-        writer.writerow([row["transaction_id"], row["timestamp"], row["product_name"], row["quantity"], row["payment_method"], row["total_amount"], row["handled_by"]])
-    output.seek(0)
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename=sales_breakdown_{mode.lower()}.csv"})
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Transaction ID", "Timestamp", "Product Name", "Quantity", "Payment Method", "Total Amount (KES)", "Staff Member"])
+        for row in rows:
+            writer.writerow([row["transaction_id"], row["timestamp"], row["product_name"], row["quantity"], row["payment_method"], row["total_amount"], row["handled_by"]])
+        output.seek(0)
+        return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename=sales_breakdown_{mode.lower()}.csv"})
+    finally:
+        conn.close()
 
 
 @app.route("/api/reports/units-sold", methods=["GET"])
@@ -2343,20 +2376,22 @@ def units_sold_report():
     shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT 
-            i.name AS product_name,
-            SUM(t.quantity) AS total_units,
-            SUM(t.total_amount) AS total_sales
-        FROM transactions t
-        JOIN items i ON t.item_id = i.item_id
-        WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT'
-        GROUP BY i.item_id
-        ORDER BY total_units DESC;
-    """, (shop_id,))
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return jsonify({"units": rows})
+    try:
+        cursor.execute("""
+            SELECT 
+                i.name AS product_name,
+                SUM(t.quantity) AS total_units,
+                SUM(t.total_amount) AS total_sales
+            FROM transactions t
+            JOIN items i ON t.item_id = i.item_id
+            WHERE (t.shop_id = ? OR t.shop_id = 1) AND t.movement_type = 'OUT'
+            GROUP BY i.item_id
+            ORDER BY total_units DESC;
+        """, (shop_id,))
+        rows = [dict(r) for r in cursor.fetchall()]
+        return jsonify({"units": rows})
+    finally:
+        conn.close()
 
 
 @app.route("/api/reports/closing-stock", methods=["GET"])
@@ -2365,18 +2400,20 @@ def closing_stock_report():
     shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT 
-            name AS product_name,
-            current_stock,
-            (current_stock * unit_price) AS valuation
-        FROM items
-        WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1
-        ORDER BY name ASC;
-    """, (shop_id,))
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return jsonify({"stock": rows})
+    try:
+        cursor.execute("""
+            SELECT 
+                name AS product_name,
+                current_stock,
+                (current_stock * unit_price) AS valuation
+            FROM items
+            WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1
+            ORDER BY name ASC;
+        """, (shop_id,))
+        rows = [dict(r) for r in cursor.fetchall()]
+        return jsonify({"stock": rows})
+    finally:
+        conn.close()
 
 
 @app.route("/api/reports/closing-stock-csv", methods=["GET"])
@@ -2385,26 +2422,28 @@ def closing_stock_csv():
     shop_id = session.get("shop_id") or 1
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT 
-            name AS product_name,
-            current_stock,
-            unit_price,
-            (current_stock * unit_price) AS valuation
-        FROM items
-        WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1
-        ORDER BY name ASC;
-    """, (shop_id,))
-    rows = cursor.fetchall()
-    conn.close()
+    try:
+        cursor.execute("""
+            SELECT 
+                name AS product_name,
+                current_stock,
+                unit_price,
+                (current_stock * unit_price) AS valuation
+            FROM items
+            WHERE (shop_id = ? OR shop_id = 1) AND is_active = 1
+            ORDER BY name ASC;
+        """, (shop_id,))
+        rows = cursor.fetchall()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Product Name", "In Stock", "Unit Price (KES)", "Valuation (KES)"])
-    for row in rows:
-        writer.writerow([row["product_name"], row["current_stock"], row["unit_price"], row["valuation"]])
-    output.seek(0)
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=closing_stock_valuation.csv"})
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Product Name", "In Stock", "Unit Price (KES)", "Valuation (KES)"])
+        for row in rows:
+            writer.writerow([row["product_name"], row["current_stock"], row["unit_price"], row["valuation"]])
+        output.seek(0)
+        return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=closing_stock_valuation.csv"})
+    finally:
+        conn.close()
 
 
 @app.route("/api/reports/export-csv", methods=["GET"])
@@ -2425,47 +2464,49 @@ def export_raw_csv():
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(f"""
-        SELECT 
-            t.transaction_id,
-            t.timestamp,
-            i.name AS product_name,
-            t.movement_type,
-            t.payment_method,
-            t.quantity,
-            t.unit_price,
-            t.total_amount,
-            u.username AS handled_by
-        FROM transactions t
-        JOIN items i ON t.item_id = i.item_id
-        JOIN users u ON t.user_id = u.user_id
-        WHERE (t.shop_id = ? OR t.shop_id = 1) AND {date_filter}
-        ORDER BY t.timestamp DESC;
-    """, tuple(params))
-    rows = cursor.fetchall()
-    conn.close()
+    try:
+        cursor.execute(f"""
+            SELECT 
+                t.transaction_id,
+                t.timestamp,
+                i.name AS product_name,
+                t.movement_type,
+                t.payment_method,
+                t.quantity,
+                t.unit_price,
+                t.total_amount,
+                u.username AS handled_by
+            FROM transactions t
+            JOIN items i ON t.item_id = i.item_id
+            JOIN users u ON t.user_id = u.user_id
+            WHERE (t.shop_id = ? OR t.shop_id = 1) AND {date_filter}
+            ORDER BY t.timestamp DESC;
+        """, tuple(params))
+        rows = cursor.fetchall()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "Transaction ID", "Timestamp", "Product Name", 
-        "Movement Type", "Payment Method", "Quantity", 
-        "Unit Price (KES)", "Total Amount (KES)", "Staff Member"
-    ])
-    for row in rows:
+        output = io.StringIO()
+        writer = csv.writer(output)
         writer.writerow([
-            row["transaction_id"], row["timestamp"], row["product_name"],
-            row["movement_type"], row["payment_method"], row["quantity"],
-            row["unit_price"], row["total_amount"], row["handled_by"]
+            "Transaction ID", "Timestamp", "Product Name", 
+            "Movement Type", "Payment Method", "Quantity", 
+            "Unit Price (KES)", "Total Amount (KES)", "Staff Member"
         ])
-    output.seek(0)
-    
-    filename = f"sales_report_{start_date}_to_{end_date}.csv" if start_date else "sales_report.csv"
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+        for row in rows:
+            writer.writerow([
+                row["transaction_id"], row["timestamp"], row["product_name"],
+                row["movement_type"], row["payment_method"], row["quantity"],
+                row["unit_price"], row["total_amount"], row["handled_by"]
+            ])
+        output.seek(0)
+        
+        filename = f"sales_report_{start_date}_to_{end_date}.csv" if start_date else "sales_report.csv"
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    finally:
+        conn.close()
 
 
 @app.route("/manifest.json")
