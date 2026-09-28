@@ -29,7 +29,7 @@ DB_FILE = "/home/kiosktrack/kiosk-track/shop.db" if os.path.exists("/home/kioskt
 
 def init_db():
     os.makedirs(os.path.dirname(os.path.abspath(DB_FILE)), exist_ok=True)
-    conn = sqlite3.connect(DB_FILE, timeout=20)
+    conn = sqlite3.connect(DB_FILE, timeout=25)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     cursor = conn.cursor()
@@ -111,7 +111,7 @@ def init_db():
 
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE, timeout=20)
+    conn = sqlite3.connect(DB_FILE, timeout=25)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
@@ -221,8 +221,15 @@ HTML_TEMPLATE = """
                     <input type="date" id="activeSaleDate" value="{{ today_date }}" onchange="onSaleDateChange()" 
                            class="bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-2 py-1 text-xs font-bold text-slate-900 dark:text-white">
                 </div>
-                <div id="dateNotice" class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                    <span>🟢</span> <span data-i18n="live_mode">Live Mode (Deducts Stock)</span>
+                <div class="flex items-center gap-2">
+                    <div id="dateNotice" class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                        <span>🟢</span> <span data-i18n="live_mode">Live Mode (Deducts Stock)</span>
+                    </div>
+                    {% if session.get('role') == 'admin' %}
+                    <button onclick="settleDaySales()" title="Clear/Settle Sales for this Date to KES 0" class="bg-rose-50 dark:bg-rose-950/70 hover:bg-rose-100 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 font-bold px-2 py-1 rounded-xl text-[10px] transition flex items-center gap-1">
+                        <span>🧹</span> Settle/Reset Day
+                    </button>
+                    {% endif %}
                 </div>
             </div>
 
@@ -288,7 +295,6 @@ HTML_TEMPLATE = """
                                     class="bg-green-600 hover:bg-green-500 text-white active:scale-95 hover:scale-105 px-2.5 py-1.5 rounded-xl text-xs font-bold shadow transition flex items-center gap-1">
                                 <span>📲</span> <span data-i18n="btn_mpesa">M-Pesa</span>
                             </button>
-                            <!-- Escaped with |tojson to prevent apostrophe quotation breakages -->
                             <button onclick="openSplitModal({{ item['item_id'] }}, {{ item['name']|tojson }}, {{ item['unit_price'] }})" 
                                     class="bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1">
                                 <span>⚡</span> <span data-i18n="btn_split">Split</span>
@@ -303,10 +309,16 @@ HTML_TEMPLATE = """
                                 <span>↩</span> <span data-i18n="btn_return">Return</span>
                             </button>
                             <input type="number" id="restock-qty-{{ item['item_id'] }}" placeholder="+Qty" min="1" 
+                                   onkeydown="if(event.key==='Enter') makeRestock({{ item['item_id'] }})"
                                    class="w-12 px-2 py-1.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-center text-xs text-slate-900 dark:text-white focus:outline-none">
                             <button onclick="makeRestock({{ item['item_id'] }})" 
                                     class="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 hover:scale-105 text-sky-700 dark:text-sky-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 transition flex items-center gap-1">
                                 <span>📦</span> <span data-i18n="btn_in">+ In</span>
+                            </button>
+                            <button onclick="deleteItem({{ item['item_id'] }}, {{ item['name']|tojson }})" 
+                                    title="Delete product and wipe its stock" 
+                                    class="bg-rose-100 dark:bg-rose-950/80 hover:bg-rose-200 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800 active:scale-95 hover:scale-105 px-2 py-1.5 rounded-xl text-xs font-bold transition flex items-center">
+                                <span>🗑️</span>
                             </button>
                         </div>
                         {% endif %}
@@ -420,7 +432,7 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="divide-y divide-slate-100 dark:divide-slate-800 max-h-[500px] overflow-y-auto pr-1">
                     {% for item in items %}
-                    <div class="audit-row py-3 flex items-center justify-between gap-2">
+                    <div class="audit-row py-3 flex items-center justify-between gap-2" id="audit-row-{{ item['item_id'] }}">
                         <div class="flex items-center gap-3">
                             <div class="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-base shadow-sm shrink-0">
                                 🏷️
@@ -432,6 +444,7 @@ HTML_TEMPLATE = """
                         </div>
                         <div class="flex items-center gap-1.5">
                             <input type="number" id="counted-{{ item['item_id'] }}" placeholder="Counted" 
+                                   onkeydown="if(event.key==='Enter') updateStockTake({{ item['item_id'] }})"
                                    class="w-16 px-2 py-1.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-center text-xs font-bold text-slate-900 dark:text-white">
                             <button onclick="updateStockTake({{ item['item_id'] }})" 
                                     class="bg-sky-600 hover:bg-sky-500 hover:scale-105 active:scale-95 text-white font-bold text-xs px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition">
@@ -483,7 +496,7 @@ HTML_TEMPLATE = """
 
                         <div class="flex items-center justify-between py-1">
                             <span class="font-semibold text-slate-700 dark:text-slate-300" data-i18n="app_version">App Version</span>
-                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v2.8 Enterprise</span>
+                            <span class="font-mono font-bold text-slate-600 dark:text-slate-400">v2.9 Pro</span>
                         </div>
                     </div>
 
@@ -638,7 +651,8 @@ HTML_TEMPLATE = """
                     <h4 class="text-[10px] font-bold uppercase text-slate-400" data-i18n="current_team">Current Team</h4>
                     <div id="existingStaffList" class="divide-y divide-slate-100 dark:divide-slate-800 text-xs"></div>
                 </div>
-                <div class="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2 text-xs">
+                
+                <form onsubmit="event.preventDefault(); submitNewStaff();" class="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2 text-xs">
                     <h4 class="text-[10px] font-bold uppercase text-slate-400" data-i18n="create_cashier">Create New Cashier</h4>
                     <div>
                         <label class="block font-semibold mb-1" data-i18n="username">Username</label>
@@ -648,11 +662,11 @@ HTML_TEMPLATE = """
                         <label class="block font-semibold mb-1" data-i18n="password_pin">Password / PIN</label>
                         <input type="password" id="staffPassword" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                     </div>
-                </div>
-                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeStaffModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_close">Close</button>
-                    <button onclick="submitNewStaff()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_create">Create Cashier</button>
-                </div>
+                    <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                        <button type="button" onclick="closeStaffModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_close">Close</button>
+                        <button type="submit" class="bg-indigo-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_create">Create Cashier</button>
+                    </div>
+                </form>
             </div>
         </div>
 
@@ -663,26 +677,26 @@ HTML_TEMPLATE = """
                     <h3 class="text-sm font-bold text-slate-900 dark:text-white" data-i18n="add_product">Add New Product</h3>
                     <button onclick="closeAddItemModal()" class="text-slate-400 text-lg font-bold">&times;</button>
                 </div>
-                <div class="space-y-3 text-xs">
+                <form onsubmit="event.preventDefault(); submitNewItem();" class="space-y-3 text-xs">
                     <div>
                         <label class="block font-semibold mb-1" data-i18n="product_name">Product Name</label>
-                        <input type="text" id="newItemName" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                        <input type="text" id="newItemName" required placeholder="e.g. Fresh Milk 500ml" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                     </div>
                     <div class="grid grid-cols-2 gap-2">
                         <div>
                             <label class="block font-semibold mb-1" data-i18n="selling_price">Selling Price (KES)</label>
-                            <input type="number" id="newItemPrice" step="0.5" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                            <input type="number" id="newItemPrice" step="0.5" required placeholder="0.0" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                         </div>
                         <div>
                             <label class="block font-semibold mb-1" data-i18n="initial_stock">Initial Stock</label>
-                            <input type="number" id="newItemStock" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
+                            <input type="number" id="newItemStock" placeholder="0" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                         </div>
                     </div>
-                </div>
-                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeAddItemModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_cancel">Cancel</button>
-                    <button onclick="submitNewItem()" class="bg-indigo-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_save">Save</button>
-                </div>
+                    <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                        <button type="button" onclick="closeAddItemModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_cancel">Cancel</button>
+                        <button type="submit" id="saveItemBtn" class="bg-indigo-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_save">Save</button>
+                    </div>
+                </form>
             </div>
         </div>
 
@@ -696,7 +710,7 @@ HTML_TEMPLATE = """
                     </div>
                     <button onclick="closeSplitModal()" class="text-slate-400 text-lg font-bold">&times;</button>
                 </div>
-                <div class="space-y-3 text-xs">
+                <form onsubmit="event.preventDefault(); submitSplitSale();" class="space-y-3 text-xs">
                     <div>
                         <label class="block font-semibold mb-1" data-i18n="cash_kes">Cash (KES)</label>
                         <input type="number" id="splitCashInput" oninput="autoCalculateMpesa()" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
@@ -705,11 +719,11 @@ HTML_TEMPLATE = """
                         <label class="block font-semibold mb-1" data-i18n="mpesa_kes">M-Pesa (KES)</label>
                         <input type="number" id="splitMpesaInput" class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white">
                     </div>
-                </div>
-                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <button onclick="closeSplitModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_cancel">Cancel</button>
-                    <button onclick="submitSplitSale()" class="bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_complete">Complete Sale</button>
-                </div>
+                    <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                        <button type="button" onclick="closeSplitModal()" class="px-3 py-1.5 text-xs text-slate-500 font-bold" data-i18n="btn_cancel">Cancel</button>
+                        <button type="submit" class="bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl" data-i18n="btn_complete">Complete Sale</button>
+                    </div>
+                </form>
             </div>
         </div>
 
@@ -753,11 +767,7 @@ HTML_TEMPLATE = """
 
         const translations = {
             en: { staff: "Staff", item: "Item", entry_date: "📅 Entry Date:", live_mode: "Live Mode (Deducts Stock)", cash: "💵 Cash", mpesa: "📲 M-Pesa", total_sales: "📊 Total Sales", search_placeholder: "Search items...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Split", btn_return: "Return", btn_in: "+ In", reports_title: "Sales & Staff Shifts", reports_subtitle: "Historical performance and staff handovers", today: "Today", yesterday: "Yesterday", week: "7 Days", month: "30 Days", revenue: "Revenue", units_sold: "Units Sold", raw_export: "📥 Flexible Range CSV Export:", csv_year: "Last Year CSV", csv_all: "All-Time CSV", staff_breakdown: "Staff Shift Breakdown", th_staff: "Staff", th_role: "Role", th_sales: "Sales", th_cash: "Cash", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Physical Stock Calibration", stock_subtitle: "Setting counts here overrides your shelf total directly", current_count: "Current Count", btn_set: "Set", store_logo: "Store Logo / Picture", btn_upload: "Upload", btn_remove: "Remove Logo", share_store: "Share Store Link", share_desc: "Copy your store link or share instantly with customers and friends via WhatsApp.", btn_copy: "Copy", btn_whatsapp: "Share via WhatsApp", app_version: "App Version", btn_close: "Close", btn_logout: "Log out", manage_cashiers: "Manage Cashiers", current_team: "Current Team", create_cashier: "Create New Cashier", username: "Username", password_pin: "Password / PIN", btn_create: "Create Cashier", add_product: "Add New Product", product_name: "Product Name", selling_price: "Selling Price (KES)", initial_stock: "Initial Stock", btn_cancel: "Cancel", btn_save: "Save", cash_kes: "Cash (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Complete Sale", nav_counter: "Counter", nav_reports: "Reports", nav_stocktake: "Stock Take", nav_profile: "Profile", install_app_btn: "Install App on Phone", closing_stock_card: "Remaining Closing Stock", closing_stock_sub: "Click to inspect remaining items & valuation", start_date: "Start Date", end_date: "End Date", settings_header: "App Settings & Preferences", theme_pref: "Theme Mode" },
-            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi" },
-            fr: { staff: "Personnel", item: "Article", entry_date: "📅 Date:", live_mode: "Mode en direct", cash: "💵 Espèces", mpesa: "📲 M-Pesa", total_sales: "📊 Ventes Totales", search_placeholder: "Rechercher...", btn_cash: "Espèces", btn_mpesa: "M-Pesa", btn_split: "Diviser", btn_return: "Retour", btn_in: "+ Entrée", reports_title: "Rapports", reports_subtitle: "Performance historique", today: "Aujourd'hui", yesterday: "Hier", week: "7 Jours", month: "30 Jours", revenue: "Revenu", units_sold: "Unités vendues", raw_export: "📥 Exporter Données:", csv_year: "CSV An Dernier", csv_all: "CSV Tout", staff_breakdown: "Détail du Personnel", th_staff: "Personnel", th_role: "Rôle", th_sales: "Ventes", th_cash: "Espèces", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibration Stock", stock_subtitle: "Modifie directement le stock", current_count: "Stock Actuel", btn_set: "Définir", store_logo: "Logo du Magasin", btn_upload: "Télécharger", btn_remove: "Supprimer Logo", share_store: "Partager le lien", share_desc: "Copiez le lien ou partagez avec vos clients via WhatsApp.", btn_copy: "Copier", btn_whatsapp: "Partager via WhatsApp", app_version: "Version", btn_close: "Fermer", btn_logout: "Déconnexion", manage_cashiers: "Gérer Caissiers", current_team: "Équipe", create_cashier: "Créer Caissier", username: "Nom d'utilisateur", password_pin: "Mot de passe", btn_create: "Créer", add_product: "Ajouter Article", product_name: "Nom", selling_price: "Prix (KES)", initial_stock: "Stock Initial", btn_cancel: "Annuler", btn_save: "Enregistrer", cash_kes: "Espèces (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Valider", nav_counter: "Comptoir", nav_reports: "Rapports", nav_stocktake: "Inventaire", nav_profile: "Profil", install_app_btn: "Installer l'application", closing_stock_card: "Stock de Clôture", closing_stock_sub: "Inspecter le stock restant", start_date: "Date Début", end_date: "Date Fin", settings_header: "Paramètres de l'application", theme_pref: "Mode Thème" },
-            es: { staff: "Personal", item: "Artículo", entry_date: "📅 Fecha:", live_mode: "Modo en Vivo", cash: "💵 Efectivo", mpesa: "📲 M-Pesa", total_sales: "📊 Ventas Totales", search_placeholder: "Buscar...", btn_cash: "Efectivo", btn_mpesa: "M-Pesa", btn_split: "Dividir", btn_return: "Devolver", btn_in: "+ Entrar", reports_title: "Reportes", reports_subtitle: "Rendimiento histórico", today: "Hoy", yesterday: "Ayer", week: "7 Días", month: "30 Días", revenue: "Ingresos", units_sold: "Unidades", raw_export: "📥 Exportar Datos:", csv_year: "CSV Año Pasado", csv_all: "CSV Todo", staff_breakdown: "Desglose del Personal", th_staff: "Personal", th_role: "Rol", th_sales: "Ventas", th_cash: "Efectivo", th_mpesa: "M-Pesa", th_total: "Total", stock_calibration: "Calibración de Stock", stock_subtitle: "Modifica el stock directamente", current_count: "Conteo Actual", btn_set: "Fijar", store_logo: "Logo de Tienda", btn_upload: "Subir", btn_remove: "Eliminar Logo", share_store: "Compartir Enlace", share_desc: "Copia el enlace o compártelo con tus clientes por WhatsApp.", btn_copy: "Copiar", btn_whatsapp: "Compartir por WhatsApp", app_version: "Versión", btn_close: "Cerrar", btn_logout: "Cerrar Sesión", manage_cashiers: "Gestionar Cajeros", current_team: "Equipo", create_cashier: "Crear Cajero", username: "Usuario", password_pin: "Contraseña", btn_create: "Crear", add_product: "Agregar Producto", product_name: "Nombre", selling_price: "Precio (KES)", initial_stock: "Stock Inicial", btn_cancel: "Cancelar", btn_save: "Guardar", cash_kes: "Efectivo (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Completar Venta", nav_counter: "Mostrador", nav_reports: "Reportes", nav_stocktake: "Inventario", nav_profile: "Perfil", install_app_btn: "Instalar Aplicación", closing_stock_card: "Stock Restante", closing_stock_sub: "Ver inventario actual", start_date: "Fecha Inicio", end_date: "Fecha Fin", settings_header: "Configuración de la App", theme_pref: "Modo de Tema" },
-            ar: { staff: "الموظفين", item: "صنف", entry_date: "📅 تاريخ:", live_mode: "الوضع المباشر", cash: "💵 نقدي", mpesa: "📲 إمبيسا", total_sales: "📊 إجمالي المبيعات", search_placeholder: "بحث عن أصناف...", btn_cash: "نقدي", btn_mpesa: "إمبيسا", btn_split: "تقسيم", btn_return: "إرجاع", btn_in: "+ إدخال", reports_title: "التقارير", reports_subtitle: "الأداء التاريخي", today: "اليوم", yesterday: "أمس", week: "7 أيام", month: "30 يوم", revenue: "الإيرادات", units_sold: "الوحدات المباعة", raw_export: "📥 تصدير البيانات:", csv_year: "CSV العام الماضي", csv_all: "CSV الكل", staff_breakdown: "تفصيل ورديات الموظفين", th_staff: "الموظف", th_role: "الدور", th_sales: "المبيعات", th_cash: "نقدي", th_mpesa: "إمبيسا", th_total: "المجموع", stock_calibration: "مراجعة المخزون", stock_subtitle: "تعديل رصيد الرف مباشرة", current_count: "العدد الحالي", btn_set: "تعيين", store_logo: "شعار المتجر", btn_upload: "رفع", btn_remove: "إزالة الشعار", share_store: "مشاركة رابط المتجر", share_desc: "انسخ الرابط أو شاركه مع العملاء والأصدقاء عبر واتساب.", btn_copy: "نسخ", btn_whatsapp: "مشاركة عبر واتساب", app_version: "إصدار التطبيق", btn_close: "إغلاق", btn_logout: "تسجيل الخروج", manage_cashiers: "إدارة الكاشير", current_team: "الفريق الحالي", create_cashier: "إنشاء كاشير", username: "اسم المستخدم", password_pin: "كلمة المرور / الرمز", btn_create: "إنشاء", add_product: "إضافة منتج", product_name: "اسم المنتج", selling_price: "سعر البيع", initial_stock: "المخزون الأولي", btn_cancel: "إلغاء", btn_save: "حفظ", cash_kes: "نقدي", mpesa_kes: "إمبيسا", btn_complete: "إتمام البيع", nav_counter: "العداد", nav_reports: "التقارير", nav_stocktake: "جرد المخزون", nav_profile: "الملف الشخصي", install_app_btn: "تثبيت التطبيق على الهاتف", closing_stock_card: "المخزون المتبقي", closing_stock_sub: "عرض تقييم المخزون", start_date: "تاريخ البدء", end_date: "تاريخ الانتهاء", settings_header: "إعدادات التطبيق", theme_pref: "وضع المظهر" },
-            zh: { staff: "员工", item: "商品", entry_date: "📅 日期：", live_mode: "实时模式", cash: "💵 现金", mpesa: "📲 移动支付", total_sales: "📊 总销售额", search_placeholder: "搜索商品...", btn_cash: "现金", btn_mpesa: "移动支付", btn_split: "拆分", btn_return: "退货", btn_in: "+ 入库", reports_title: "销售与班次", reports_subtitle: "历史业绩", today: "今天", yesterday: "昨天", week: "7天", month: "30天", revenue: "收入", units_sold: "销售数量", raw_export: "📥 导出原始数据:", csv_year: "去年CSV", csv_all: "全部CSV", staff_breakdown: "员工班次明细", th_staff: "员工", th_role: "角色", th_sales: "销售", th_cash: "现金", th_mpesa: "移动支付", th_total: "总计", stock_calibration: "库存校准", stock_subtitle: "直接覆盖货架库存", current_count: "当前盘点", btn_set: "设置", store_logo: "店铺标志", btn_upload: "上传", btn_remove: "移除Logo", share_store: "分享店铺链接", share_desc: "复制您的店铺链接，或通过WhatsApp快速分享给客户和好友。", btn_copy: "复制", btn_whatsapp: "通过WhatsApp分享", app_version: "应用版本", btn_close: "关闭", btn_logout: "退出登录", manage_cashiers: "管理收银员", current_team: "当前团队", create_cashier: "新建收银员", username: "用户名", password_pin: "密码/PIN", btn_create: "创建", add_product: "添加新商品", product_name: "商品名称", selling_price: "售价", initial_stock: "初始库存", btn_cancel: "取消", btn_save: "保存", cash_kes: "现金", mpesa_kes: "移动支付", btn_complete: "完成销售", nav_counter: "收银台", nav_reports: "报表", nav_stocktake: "盘点", nav_profile: "个人资料", install_app_btn: "在手机上安装应用", closing_stock_card: "剩余库存", closing_stock_sub: "查看剩余库存及估值", start_date: "开始日期", end_date: "结束日期", settings_header: "应用设置", theme_pref: "主题模式" }
+            sw: { staff: "Wafanyakazi", item: "Bidhaa", entry_date: "📅 Tarehe:", live_mode: "Hali ya Moja kwa Moja (Inapunguza Stock)", cash: "💵 Pesa taslimu", mpesa: "📲 M-Pesa", total_sales: "📊 Jumla ya Mauzo", search_placeholder: "Tafuta bidhaa...", btn_cash: "Cash", btn_mpesa: "M-Pesa", btn_split: "Gawanya", btn_return: "Rudisha", btn_in: "+ Ingiza", reports_title: "Mauzo na Zamu", reports_subtitle: "Utendaji wa kihistoria na zamu za wafanyakazi", today: "Leo", yesterday: "Jana", week: "Siku 7", month: "Siku 30", revenue: "Mapato", units_sold: "Bidhaa Zilizouzwa", raw_export: "📥 Hamisha Data kwa Tarehe:", csv_year: "CSV ya Mwaka Jana", csv_all: "CSV ya Wakati Wote", staff_breakdown: "Uchanganuzi wa Zamu", th_staff: "Mfanyakazi", th_role: "Nafasi", th_sales: "Mauzo", th_cash: "Pesa", th_mpesa: "M-Pesa", th_total: "Jumla", stock_calibration: "Kurekebisha Stock", stock_subtitle: "Kuandika idadi hapa kunabadilisha moja kwa moja rafu yako", current_count: "Idadi ya Sasa", btn_set: "Weka", store_logo: "Nembo ya Duka / Picha", btn_upload: "Weka", btn_remove: "Ondoa Nembo", share_store: "Shiriki Kiungo cha Duka", share_desc: "Nakili kiungo au ushiriki papo hapo na wateja kupitia WhatsApp.", btn_copy: "Nakili", btn_whatsapp: "Shiriki kupitia WhatsApp", app_version: "Toleo la App", btn_close: "Funga", btn_logout: "Ondoka", manage_cashiers: "Simamia Watoa Huduma", current_team: "Timu ya Sasa", create_cashier: "Unda Mfanyakazi Mpya", username: "Jina la mtumiaji", password_pin: "Nenosiri / PIN", btn_create: "Unda", add_product: "Ongeza Bidhaa Mpya", product_name: "Jina la Bidhaa", selling_price: "Bei ya KUUZA (KES)", initial_stock: "Stock ya Awali", btn_cancel: "Ghairi", btn_save: "Hifadhi", cash_kes: "Pesa (KES)", mpesa_kes: "M-Pesa (KES)", btn_complete: "Maliza Mauzo", nav_counter: "Kaunta", nav_reports: "Ripoti", nav_stocktake: "Hesabu ya Stock", nav_profile: "Wasifu", install_app_btn: "Weka App kwenye Simu", closing_stock_card: "Bidhaa Zilizobaki", closing_stock_sub: "Bonyeza kuona thamani na bidhaa zilizobaki", start_date: "Tarehe ya Kuanza", end_date: "Tarehe ya Mwisho", settings_header: "Mipangilio ya App", theme_pref: "Hali ya Rangi" }
         };
 
         function changeLanguage(lang) {
@@ -988,23 +998,27 @@ HTML_TEMPLATE = """
         async function makeSale(itemId, payment) {
             const qty = parseInt(document.getElementById(`qty-${itemId}`).value) || 1;
             const saleDate = document.getElementById('activeSaleDate').value;
-            const res = await fetch('/api/sale', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ item_id: itemId, quantity: qty, payment_method: payment, sale_date: saleDate })
-            });
-            const d = await res.json();
-            if (res.ok) {
-                document.getElementById(`stock-val-${itemId}`).innerText = d.new_stock;
-                const auditVal = document.getElementById(`audit-sys-${itemId}`);
-                if (auditVal) auditVal.innerText = d.new_stock;
-                document.getElementById('statCash').innerText = `KES ${Math.round(d.today_cash).toLocaleString()}`;
-                document.getElementById('statMpesa').innerText = `KES ${Math.round(d.today_mpesa).toLocaleString()}`;
-                document.getElementById('statTotal').innerText = `KES ${Math.round(d.today_cash + d.today_mpesa).toLocaleString()}`;
-                showToast(`Recorded sale for ${saleDate}`);
-            } else {
-                showToast(d.error || 'Sale failed', false);
+            try {
+                const res = await fetch('/api/sale', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: itemId, quantity: qty, payment_method: payment, sale_date: saleDate })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    document.getElementById(`stock-val-${itemId}`).innerText = d.new_stock;
+                    const auditVal = document.getElementById(`audit-sys-${itemId}`);
+                    if (auditVal) auditVal.innerText = d.new_stock;
+                    document.getElementById('statCash').innerText = `KES ${Math.round(d.today_cash).toLocaleString()}`;
+                    document.getElementById('statMpesa').innerText = `KES ${Math.round(d.today_mpesa).toLocaleString()}`;
+                    document.getElementById('statTotal').innerText = `KES ${Math.round(d.today_cash + d.today_mpesa).toLocaleString()}`;
+                    showToast(`Recorded sale for ${saleDate}`);
+                } else {
+                    showToast(d.error || 'Sale failed', false);
+                }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
             }
         }
 
@@ -1028,75 +1042,159 @@ HTML_TEMPLATE = """
             const c = parseFloat(document.getElementById('splitCashInput').value) || 0;
             const m = parseFloat(document.getElementById('splitMpesaInput').value) || 0;
             const saleDate = document.getElementById('activeSaleDate').value;
-            const res = await fetch('/api/sale/split', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ item_id: activeSplitId, quantity: activeSplitQty, cash_amount: c, mpesa_amount: m, sale_date: saleDate })
-            });
-            const d = await res.json();
-            if(res.ok) {
-                document.getElementById(`stock-val-${activeSplitId}`).innerText = d.new_stock;
-                document.getElementById('statCash').innerText = `KES ${Math.round(d.today_cash).toLocaleString()}`;
-                document.getElementById('statMpesa').innerText = `KES ${Math.round(d.today_mpesa).toLocaleString()}`;
-                document.getElementById('statTotal').innerText = `KES ${Math.round(d.today_cash + d.today_mpesa).toLocaleString()}`;
-                showToast("Split sale recorded!");
-                closeSplitModal();
-            } else {
-                showToast(d.error || 'Error recording split', false);
+            try {
+                const res = await fetch('/api/sale/split', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: activeSplitId, quantity: activeSplitQty, cash_amount: c, mpesa_amount: m, sale_date: saleDate })
+                });
+                const d = await res.json();
+                if(res.ok) {
+                    document.getElementById(`stock-val-${activeSplitId}`).innerText = d.new_stock;
+                    document.getElementById('statCash').innerText = `KES ${Math.round(d.today_cash).toLocaleString()}`;
+                    document.getElementById('statMpesa').innerText = `KES ${Math.round(d.today_mpesa).toLocaleString()}`;
+                    document.getElementById('statTotal').innerText = `KES ${Math.round(d.today_cash + d.today_mpesa).toLocaleString()}`;
+                    showToast("Split sale recorded!");
+                    closeSplitModal();
+                } else {
+                    showToast(d.error || 'Error recording split', false);
+                }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
             }
         }
 
         async function reverseSale(id) {
             const q = parseInt(document.getElementById(`qty-${id}`).value) || 1;
-            const res = await fetch('/api/sale/reverse', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ item_id: id, quantity: q })
-            });
-            const d = await res.json();
-            if(res.ok) {
-                document.getElementById(`stock-val-${id}`).innerText = d.new_stock;
-                const auditVal = document.getElementById(`audit-sys-${id}`);
-                if (auditVal) auditVal.innerText = d.new_stock;
-                showToast(`Returned: Added ${q} pcs back to shelf`);
+            try {
+                const res = await fetch('/api/sale/reverse', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: id, quantity: q })
+                });
+                const d = await res.json();
+                if(res.ok) {
+                    document.getElementById(`stock-val-${id}`).innerText = d.new_stock;
+                    const auditVal = document.getElementById(`audit-sys-${id}`);
+                    if (auditVal) auditVal.innerText = d.new_stock;
+                    showToast(`Returned: Added ${q} pcs back to shelf`);
+                } else {
+                    showToast(d.error || 'Failed to return sale', false);
+                }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
             }
         }
 
         async function updateStockTake(id) {
             const val = parseInt(document.getElementById(`counted-${id}`).value);
-            if (isNaN(val)) {
-                showToast("Enter a valid shelf count", false);
+            if (isNaN(val) || val < 0) {
+                showToast("Enter a valid shelf count (0 or more)", false);
                 return;
             }
-            const res = await fetch('/api/stocktake/update-count', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ item_id: id, counted_quantity: val })
-            });
-            const d = await res.json();
-            if(res.ok) {
-                document.getElementById(`stock-val-${id}`).innerText = d.new_stock;
-                const auditVal = document.getElementById(`audit-sys-${id}`);
-                if (auditVal) auditVal.innerText = d.new_stock;
-                showToast(`Shelf count updated to ${d.new_stock}`);
+            try {
+                const res = await fetch('/api/stocktake/update-count', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: id, counted_quantity: val })
+                });
+                const d = await res.json();
+                if(res.ok) {
+                    const counterStock = document.getElementById(`stock-val-${id}`);
+                    if (counterStock) counterStock.innerText = d.new_stock;
+                    const auditVal = document.getElementById(`audit-sys-${id}`);
+                    if (auditVal) auditVal.innerText = d.new_stock;
+                    document.getElementById(`counted-${id}`).value = '';
+                    showToast(`Shelf count updated to ${d.new_stock}`);
+                } else {
+                    showToast(d.error || 'Failed to update stock take', false);
+                }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
             }
         }
 
         async function makeRestock(id) {
-            const q = parseInt(document.getElementById(`restock-qty-${id}`).value) || 0;
-            const res = await fetch('/api/restock', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ item_id: id, quantity: q })
-            });
-            const d = await res.json();
-            if(res.ok) {
-                document.getElementById(`stock-val-${id}`).innerText = d.new_stock;
-                showToast(`Restocked ${d.new_stock} pcs`);
+            const input = document.getElementById(`restock-qty-${id}`);
+            const q = parseInt(input.value) || 0;
+            if (q <= 0) {
+                showToast("Enter a positive quantity to restock", false);
+                return;
+            }
+            try {
+                const res = await fetch('/api/restock', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: id, quantity: q })
+                });
+                const d = await res.json();
+                if(res.ok) {
+                    document.getElementById(`stock-val-${id}`).innerText = d.new_stock;
+                    const auditVal = document.getElementById(`audit-sys-${id}`);
+                    if (auditVal) auditVal.innerText = d.new_stock;
+                    input.value = '';
+                    showToast(`Restocked: Shelf is now ${d.new_stock} pcs`);
+                } else {
+                    showToast(d.error || 'Failed to restock item', false);
+                }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
+            }
+        }
+
+        async function deleteItem(itemId, itemName) {
+            if (!confirm(`Are you sure you want to delete "${itemName}"? This wipes its inventory to 0 and removes it from the counter.`)) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/items/delete', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: itemId })
+                });
+                const d = await res.json();
+                if (res.ok && d.success) {
+                    showToast(`"${itemName}" deleted`);
+                    const card = document.getElementById(`item-card-${itemId}`);
+                    if (card) card.remove();
+                    const auditRow = document.getElementById(`audit-row-${itemId}`);
+                    if (auditRow) auditRow.remove();
+                } else {
+                    showToast(d.error || 'Failed to delete item', false);
+                }
+            } catch (err) {
+                showToast('Network error: ' + err.message, false);
+            }
+        }
+
+        async function settleDaySales() {
+            const saleDate = document.getElementById('activeSaleDate').value || TODAY_STR;
+            if (!confirm(`Are you sure you want to settle and reset all sales to KES 0 for ${saleDate}?`)) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/sales/settle-day', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target_date: saleDate })
+                });
+                const d = await res.json();
+                if (res.ok && d.success) {
+                    document.getElementById('statCash').innerText = "KES 0";
+                    document.getElementById('statMpesa').innerText = "KES 0";
+                    document.getElementById('statTotal').innerText = "KES 0";
+                    showToast(`Sales settled to KES 0 for ${saleDate}`);
+                } else {
+                    showToast(d.error || 'Failed to settle day', false);
+                }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
             }
         }
 
@@ -1285,17 +1383,21 @@ HTML_TEMPLATE = """
         async function resetStaffPassword(userId, username) {
             const newPass = prompt(`Enter new password / PIN for @${username}:`);
             if (!newPass) return;
-            const res = await fetch('/api/staff/reset-password', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_id: userId, new_password: newPass })
-            });
-            const d = await res.json();
-            if (res.ok) {
-                showToast(`Password updated for @${username}`);
-            } else {
-                showToast(d.error || 'Failed to update password', false);
+            try {
+                const res = await fetch('/api/staff/reset-password', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: userId, new_password: newPass })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    showToast(`Password updated for @${username}`);
+                } else {
+                    showToast(d.error || 'Failed to update password', false);
+                }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
             }
         }
 
@@ -1303,18 +1405,22 @@ HTML_TEMPLATE = """
             if (!confirm(`Are you sure you want to remove cashier @${username}?`)) {
                 return;
             }
-            const res = await fetch('/api/staff/delete', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_id: userId })
-            });
-            const d = await res.json();
-            if (res.ok) {
-                showToast(`Cashier @${username} removed!`);
-                openStaffModal();
-            } else {
-                showToast(d.error || 'Failed to remove cashier', false);
+            try {
+                const res = await fetch('/api/staff/delete', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: userId })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    showToast(`Cashier @${username} removed!`);
+                    openStaffModal();
+                } else {
+                    showToast(d.error || 'Failed to remove cashier', false);
+                }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
             }
         }
         
@@ -1325,34 +1431,45 @@ HTML_TEMPLATE = """
                 showToast("Please enter both username and password", false);
                 return;
             }
-            const res = await fetch('/api/staff/create', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: u, password: p, role: 'cashier' })
-            });
-            const d = await res.json();
-            if (res.ok) {
-                showToast(`Cashier @${u} created!`);
-                openStaffModal();
-                document.getElementById('staffUsername').value = '';
-                document.getElementById('staffPassword').value = '';
-            } else {
-                if (res.status === 401 || res.status === 403) {
-                    showToast("Session expired. Please log out and log in again.", false);
+            try {
+                const res = await fetch('/api/staff/create', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: u, password: p, role: 'cashier' })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    showToast(`Cashier @${u} created!`);
+                    openStaffModal();
+                    document.getElementById('staffUsername').value = '';
+                    document.getElementById('staffPassword').value = '';
                 } else {
-                    showToast(d.error || 'Failed to create cashier', false);
+                    if (res.status === 401 || res.status === 403) {
+                        showToast("Session expired. Please log out and log in again.", false);
+                    } else {
+                        showToast(d.error || 'Failed to create cashier', false);
+                    }
                 }
+            } catch (err) {
+                showToast("Network error: " + err.message, false);
             }
         }
 
-        function openAddItemModal() { document.getElementById('addItemModal').classList.remove('hidden'); }
+        function openAddItemModal() { 
+            document.getElementById('newItemName').value = '';
+            document.getElementById('newItemPrice').value = '';
+            document.getElementById('newItemStock').value = '';
+            document.getElementById('addItemModal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('newItemName').focus(), 100);
+        }
         function closeAddItemModal() { document.getElementById('addItemModal').classList.add('hidden'); }
 
         async function submitNewItem() {
             const nameInput = document.getElementById('newItemName');
             const priceInput = document.getElementById('newItemPrice');
             const stockInput = document.getElementById('newItemStock');
+            const saveBtn = document.getElementById('saveItemBtn');
 
             const name = nameInput.value.trim();
             const priceVal = priceInput.value.trim();
@@ -1371,9 +1488,12 @@ HTML_TEMPLATE = """
 
             const stock = stockVal === "" ? 0 : parseInt(stockVal);
             if (isNaN(stock) || stock < 0) {
-                showToast("Initial stock must be a non-negative number", false);
+                showToast("Initial stock must be 0 or more", false);
                 return;
             }
+
+            saveBtn.disabled = true;
+            saveBtn.innerText = "Saving...";
 
             try {
                 const res = await fetch('/api/items/add', {
@@ -1389,6 +1509,8 @@ HTML_TEMPLATE = """
                     closeAddItemModal();
                     setTimeout(() => location.reload(), 300);
                 } else {
+                    saveBtn.disabled = false;
+                    saveBtn.innerText = "Save";
                     if (res.status === 401 || res.status === 403) {
                         showToast("Session expired. Please log out and back in.", false);
                     } else {
@@ -1396,6 +1518,8 @@ HTML_TEMPLATE = """
                     }
                 }
             } catch (err) {
+                saveBtn.disabled = false;
+                saveBtn.innerText = "Save";
                 showToast("Network / Server error: " + err.message, false);
             }
         }
@@ -1622,7 +1746,7 @@ def index():
             COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
             COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
         FROM transactions
-        WHERE (shop_id = ? OR shop_id = 1) AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
     """, (shop_id,))
     totals = cursor.fetchone()
     conn.close()
@@ -1803,6 +1927,69 @@ def add_new_item():
     return jsonify({"success": True})
 
 
+@app.route("/api/items/delete", methods=["POST"])
+@admin_required
+def delete_item():
+    data = request.get_json() or {}
+    item_id = int(data.get("item_id", 0))
+    shop_id = session.get("shop_id") or 1
+    user_id = session.get("user_id") or 1
+
+    if not item_id:
+        return jsonify({"error": "Item ID required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        # Zero out stock and mark inactive so item and its quantity are completely deleted
+        cursor.execute("""
+            UPDATE items 
+            SET current_stock = 0, is_active = 0 
+            WHERE item_id = ? AND (shop_id = ? OR shop_id = 1)
+        """, (item_id, shop_id))
+
+        cursor.execute("""
+            INSERT INTO transactions (shop_id, user_id, item_id, movement_type, payment_method, quantity, unit_price, total_amount)
+            VALUES (?, ?, ?, 'ADJUSTMENT', 'N/A', 0, 0, 0)
+        """, (shop_id, user_id, item_id))
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Could not delete item: {str(e)}"}), 500
+
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/sales/settle-day", methods=["POST"])
+@admin_required
+def settle_day_sales():
+    data = request.get_json() or {}
+    target_date = data.get("target_date") or date.today().isoformat()
+    shop_id = session.get("shop_id") or 1
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        # Settle sales for the selected date to zero
+        cursor.execute("""
+            DELETE FROM transactions 
+            WHERE (shop_id = ? OR shop_id = 1) 
+              AND movement_type = 'OUT' 
+              AND DATE(timestamp, 'localtime') = ?
+        """, (shop_id, target_date))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Failed to settle sales: {str(e)}"}), 500
+
+    conn.close()
+    return jsonify({"success": True})
+
+
 @app.route("/api/sale", methods=["POST"])
 @login_required
 def api_sale():
@@ -1841,7 +2028,7 @@ def api_sale():
             COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
             COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
         FROM transactions
-        WHERE (shop_id = ? OR shop_id = 1) AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
     """, (shop_id,))
     totals = cursor.fetchone()
     conn.commit()
@@ -1897,7 +2084,7 @@ def api_sale_split():
             COALESCE(SUM(CASE WHEN payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_total,
             COALESCE(SUM(CASE WHEN payment_method = 'MPESA' THEN total_amount ELSE 0 END), 0) as mpesa_total
         FROM transactions
-        WHERE (shop_id = ? OR shop_id = 1) AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
+        WHERE (shop_id = ? OR shop_id = 1) AND movement_type = 'OUT' AND DATE(timestamp, 'localtime') = DATE('now', 'localtime');
     """, (shop_id,))
     totals = cursor.fetchone()
     conn.commit()
@@ -1972,6 +2159,9 @@ def api_restock():
     qty = int(data.get("quantity", 0))
     shop_id = session.get("shop_id") or 1
     user_id = session.get("user_id") or 1
+
+    if qty <= 0:
+        return jsonify({"error": "Quantity must be greater than zero"}), 400
 
     conn = get_db()
     cursor = conn.cursor()
